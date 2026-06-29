@@ -1,0 +1,25 @@
+{
+  "id": "generic-carrier",
+  "name": "Generic SMPP 3.4 Carrier Certification Pack",
+  "provider_id": "generic-carrier",
+  "version": 52,
+  "bind_mode": "transceiver",
+  "window_size": 16,
+  "tps": 100,
+  "multipart": "udh",
+  "dlr": "mixed",
+  "ton_npi_rules": [
+    {"source_pattern": "regex:^[A-Za-z0-9]{1,11}$", "source_ton": 5, "source_npi": 0, "dest_pattern": "+", "dest_ton": 1, "dest_npi": 1}
+  ],
+  "tlv_quirks": [
+    {"tag": 524, "name": "message_payload", "required": false, "forbidden": false, "max_len": 4096},
+    {"tag": 526, "name": "sar_total_segments", "required": false, "forbidden": false, "min_len": 1, "max_len": 1}
+  ],
+  "dlr_samples": [
+    {"name":"delivered text receipt","raw":"id:abc123 sub:001 dlvrd:001 submit date:2606291200 done date:2606291201 stat:DELIVRD err:000 text:hello","provider_message_id":"abc123","expected_state":"delivered","error_code":"000"}
+  ],
+  "acceptance": [
+    {"name":"submit_sm basic","operation":4,"version":52,"source":"ACME","destination":"+16502530000","text":"hello","expect_status":0}
+  ],
+  "throttle": {"temporary_statuses":[88,20,8],"backoff_min":1000000000,"backoff_max":60000000000,"window_penalty":0.5,"tps_penalty":0.75}
+}

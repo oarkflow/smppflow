@@ -1,0 +1,4 @@
+[
+  {"name":"too-short-header","operation":4,"hex":"010203","expect_status":2,"malformed":true,"notes":"PDU shorter than 16-byte SMPP header"},
+  {"name":"invalid-command-length","operation":4,"hex":"00000008000000040000000000000001","expect_status":2,"malformed":true,"notes":"command_length smaller than header"}
+]

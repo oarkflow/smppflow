@@ -1,0 +1,1 @@
+{"title":"SMPPFlow Carrier Gateway","panels":[{"title":"Submit TPS","type":"timeseries","targets":[{"expr":"sum(rate(smpp_submit_total[1m]))"}]},{"title":"Provider Errors","type":"timeseries","targets":[{"expr":"sum by(provider)(rate(smpp_provider_errors_total[5m]))"}]},{"title":"Queue Depth","type":"timeseries","targets":[{"expr":"smpp_queue_depth"}]}]}

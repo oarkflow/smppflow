@@ -86,3 +86,26 @@ func TLVBytes(tag TLVTag, b []byte) TLV {
 	cp := append([]byte(nil), b...)
 	return TLV{Tag: tag, Value: cp}
 }
+
+const (
+	TLVCongestionState       TLVTag = 0x0301
+	TLVBillingIdentification TLVTag = 0x060B
+	TLVSourceNetworkID       TLVTag = 0x060D
+	TLVSourceNodeID          TLVTag = 0x060F
+	TLVDestNetworkID         TLVTag = 0x0611
+	TLVDestNodeID            TLVTag = 0x0613
+	TLVDestAddrNPCountry     TLVTag = 0x0615
+	TLVDestAddrNPInformation TLVTag = 0x0616
+	TLVDestAddrNPResolution  TLVTag = 0x0617
+)
+
+func TLVUint32(tag TLVTag, v uint32) TLV {
+	return TLV{Tag: tag, Value: []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}}
+}
+func TLVInt(tag TLVTag, v int) TLV { return TLVUint32(tag, uint32(v)) }
+func TLVBool(tag TLVTag, v bool) TLV {
+	if v {
+		return TLVByte(tag, 1)
+	}
+	return TLVByte(tag, 0)
+}

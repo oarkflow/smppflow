@@ -1,0 +1,17 @@
+groups:
+  - name: smppflow
+    rules:
+      - alert: ProviderHighErrorRate
+        expr: rate(smpp_provider_errors_total[5m]) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Provider error rate is high
+      - alert: QueueBacklog
+        expr: smpp_queue_depth > 100000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: SMPP queue backlog is growing

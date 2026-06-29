@@ -1,353 +1,250 @@
 # smppflow
 
-`smppflow` is a comprehensive Go SMPP toolkit and platform foundation with SMPP client, mock SMSC/server, protocol codec, message/text manager, automatic address TON/NPI detection, automatic multipart handling, event bus, hooks, lifecycle states, storage, queues, routing, provider profiles, service layer, HTTP API, reports, and runnable examples.
+`smppflow` is a production-oriented SMPP server/client platform in Go. It implements SMPP 3.3, 3.4 and 5.0 protocol coverage, server/client sessions, routing, message management, multipart SMS handling, DLR parsing, queueing, storage interfaces, hooks/events, reporting, and operational components for carrier-grade SMS gateways.
 
-The implementation is interface-first and intentionally extensible: provider adapters, PostgreSQL/MySQL/Redis stores, Kafka/NATS event streams, webhooks, country policies, dashboards, and certified vendor fixtures can be added without rewriting the protocol/session/message core.
+## Implemented capability map
 
-## Implemented feature families
+### Protocol
 
-### SMPP protocol
+- SMPP versions: 3.3, 3.4, 5.0.
+- Full command constants and builders/parsers for common operations:
+  - bind receiver/transmitter/transceiver
+  - unbind
+  - enquire_link
+  - generic_nack
+  - submit_sm
+  - submit_multi
+  - deliver_sm
+  - data_sm
+  - query_sm
+  - cancel_sm
+  - replace_sm
+  - outbind
+  - alert_notification
+  - broadcast_sm
+  - query_broadcast_sm
+  - cancel_broadcast_sm
+- Version capability matrix through `protocol.Capabilities`.
+- Version validation through `protocol.ValidatePDUForVersion`.
+- Version negotiation through `protocol.NegotiateVersion`.
+- Complete standard TLV registry with v3.4/v5.0 metadata.
+- v5-focused TLVs for congestion state, billing, endpoint identification, USSD and number portability.
+- PDU codec with max-length protection.
+- TON/NPI address auto-detection.
 
-- SMPP version constants: 3.3, 3.4, 5.0.
-- Binary PDU header encode/decode.
-- Command IDs and status codes.
-- TLV registry and helpers.
-- Unknown TLV preservation while parsing submit/deliver PDUs.
-- Implemented/buildable operations:
-  - `bind_receiver`, `bind_transmitter`, `bind_transceiver`
-  - bind responses
-  - `submit_sm`, `submit_sm_resp`
-  - `deliver_sm`, `deliver_sm_resp`
-  - `data_sm`, `data_sm_resp`
-  - `query_sm`, `query_sm_resp`
-  - `replace_sm`, `replace_sm_resp`
-  - `cancel_sm`, `cancel_sm_resp`
-  - `submit_multi`, `submit_multi_resp`
-  - `enquire_link`, `enquire_link_resp`
-  - `unbind`, `unbind_resp`
-  - `generic_nack`
-  - constants for alert/broadcast families
+### Client/session runtime
 
-### SMPP client/session runtime
-
-- TCP client.
-- Optional TLS config.
-- Bind as receiver/transmitter/transceiver.
+- SMPP TCP/TLS client.
+- Bind, reconnect primitives, heartbeat, enquire_link handling.
 - Windowed request/response tracking.
-- Sequence manager with wrap protection.
-- Heartbeat with `enquire_link`.
-- Inbound PDU channel.
-- Graceful unbind/close.
-- Response timeout.
-- Window-full protection.
-- Methods for `SubmitSM`, `DataSM`, `QuerySM`, `CancelSM`, `ReplaceSM`.
+- Submit, data_sm, submit_multi, query, cancel, replace, broadcast APIs.
+- Async inbound PDU channel.
+- Managed provider session manager with health, bind latency and failure tracking.
 
-### Mock SMPP server/SMSC
+### Server runtime
 
-- Bind authentication hook.
-- `submit_sm` handling.
-- `data_sm` handling.
-- `query_sm`, `replace_sm`, `cancel_sm` handling.
-- `submit_multi` response.
-- Auto DLR generation through `deliver_sm`.
-- `enquire_link` and `unbind` handling.
-- Custom handler hooks for submit/query/cancel/replace/data_sm.
+- Runnable SMPP server/SMSC simulator.
+- Auth hook.
+- Bind handling and version negotiation.
+- submit_sm/data_sm/query/cancel/replace/submit_multi/broadcast handlers.
+- Auto DLR support.
+- Alert/outbind PDU coverage.
+- Production account wrapper package with hashed credentials, bind modes, bind limits and session registry primitives.
 
-### Text and SMS manager
+### Message platform
 
-- GSM 03.38 basic detection.
-- GSM extension table detection.
-- UCS-2 detection.
-- Binary encoding mode.
-- Data coding selection.
-- Invisible/zero-width character detection.
-- SMS part estimation.
-- Automatic segmentation.
-- UDH multipart concatenation.
-- SAR TLV multipart concatenation.
-- Segment references and part indexes.
-- Segment-level provider message IDs.
+- Message manager.
+- GSM 7-bit subset and UCS-2 detection.
+- Multipart UDH and SAR TLV segmentation.
+- Emoji/Unicode-safe UCS-2 encoding.
+- Inbound deliver_sm handling.
+- DLR parsing from text and TLVs.
+- Segment records with provider message IDs.
+- Lifecycle states for created, segmented, queued, submitted, accepted, delivered, failed, expired, rejected, dead-lettered and archived.
 
-### Message lifecycle
+### Routing
 
-- Message creation.
-- Validation.
-- Encoding/segmentation.
-- Submission.
-- Segment-level state tracking.
-- Parent message state.
-- DLR processing loop.
-- Inbound MO event publishing.
-- Metadata and tenant fields.
+- Provider registry.
+- Tenant, user, sender, prefix and fallback routing.
+- Quality/cost/latency scoring.
+- Advanced strategies:
+  - best quality
+  - least cost
+  - fastest latency
+  - weighted routing
+- Provider cooldown support.
+- Provider stats for TPS, delivery rate, failures, latency and cost.
 
-### Delivery receipts
+### Storage and queue
 
-- Text DLR parsing: `id:... stat:... err:...`.
-- TLV-based `receipted_message_id`.
-- TLV-based `message_state`.
-- Normalized states.
-- Raw DLR preservation.
-- DLR storage.
+- Memory message/DLR store.
+- Portable `database/sql` store abstraction for PostgreSQL/MySQL/SQLite style drivers supplied by the application.
+- SQL migrations for messages and DLRs.
+- Memory durable-like queue with retry/dead-letter behavior.
+- Queue workers in service layer.
 
-### Events and hooks
+### Security
 
-- In-memory event bus.
-- Sync or async event handlers.
-- Wildcard subscriptions.
-- Ordered hooks with priorities.
-- Hook timeout.
-- Fail-open/fail-closed behavior.
-- Panic protection.
-- Hook points around connect, bind, PDU send, validation, segmentation, submit, DLR, inbound, and storage.
+- Secret hashing and constant-time comparison.
+- IP allow/deny CIDR policy.
+- Token-bucket rate limiter.
+- Redaction helper.
+- Account model with tenant ID, system ID, allowed bind modes, source policy and TPS metadata.
 
-### Storage
+### Observability/reporting
 
-- Storage interface.
-- In-memory implementation.
-- Message persistence.
-- DLR persistence.
-- State update.
-- Safe copies for list/get operations.
+- Event bus with wildcard subscription.
+- Lifecycle hooks.
+- Prometheus-style metrics registry.
+- Summary reports.
+- API server exposing send, enqueue, list messages, list DLRs, reports and health.
 
-### Queue and async service
+### Number intelligence
 
-- Memory queue.
-- Immediate jobs.
-- Delayed/scheduled jobs.
-- Priority reservation.
-- Retry with delay.
-- Max attempts.
-- Dead-letter queue.
-- Async service workers.
-- Direct send and enqueue APIs.
+- Country-aware phone parsing and formatting using `github.com/oarkflow/phone@v0.0.7`.
+- `phone.Parse(number, region)`, `phone.Format`, and `phone.Verify` backed validation path.
+- E.164, national, international and RFC3966 formatted output.
+- Prefix/enrichment overlays for country, MCC, MNC, NNC/NDC, network, carrier, type and line type.
+- Blacklist/whitelist primitives.
+- HLR, MNP, carrier, roaming and fraud lookup extension hooks via `intelligence.Enricher`.
 
-### Routing and provider profiles
-
-- Provider profiles for generic SMPP 3.4, legacy SMPP 3.3, modern SMPP 5.0.
-- Per-provider version, bind mode, TPS, window, encoding/multipart preferences, DLR format, capabilities.
-- Routing by tenant, prefix, sender, priority.
-- Fallback routing.
-
-### Reports
-
-- JSON summary report.
-- CSV message export.
-- Counts by message state.
-- Parts count.
-- DLR count.
-
-### HTTP API service
-
-- `POST /v1/messages/send`
-- `POST /v1/messages/enqueue`
-- `GET /v1/messages`
-- `GET /v1/dlrs`
-- `GET /v1/reports/summary`
-- `GET /healthz`
-
-
-## Automatic address format detection
-
-All SMPP builders and the high-level message manager can infer TON/NPI from sender and destination address format when TON/NPI are not explicitly set. The detector normalizes common address decorations before encoding PDUs.
-
-Supported detections include:
-
-- alphanumeric sender IDs: `ORGWARE` -> TON `alphanumeric`, NPI `unknown`
-- E.164 addresses: `+977 980-000-0000` -> normalized `9779800000000`, TON `international`, NPI `isdn_e164`
-- international `00` prefix: `009779800000000` -> normalized `9779800000000`, TON `international`, NPI `isdn_e164`
-- national trunk prefix: `01444123` -> TON `national`, NPI `isdn_e164`
-- short codes: `12345` -> TON `abbreviated`, NPI `unknown`
-- subscriber numbers: `1234567` -> TON `subscriber`, NPI `isdn_e164`
-- internet/email style addresses: `user@example.com` -> NPI `internet`
-
-Explicit non-zero TON/NPI values are preserved, while the address string is still normalized. Run:
+## Quick start
 
 ```bash
-go run ./examples/address_detection
-```
-
-## Runnable examples
-
-```bash
+go test ./...
 go run ./examples/mockserver
-```
-
-```bash
 go run ./examples/client
+go run ./examples/production_platform
+go run ./examples/phone_intelligence
 ```
+
+
+## Phone intelligence example
+
+```go
+import phone "github.com/oarkflow/phone"
+
+num, err := phone.Parse("6502530000", "US")
+formattedNum := phone.Format(num, phone.NATIONAL)
+verified := phone.Verify("+1 650 253 0000")
+
+_ = err
+_ = formattedNum
+_ = verified
+```
+
+The SMPP platform wraps the same library through `intelligence.Resolver`:
+
+```go
+resolver := intelligence.NewResolverWithRegion([]intelligence.PrefixEntry{
+    {Prefix: "+1650", CountryCode: "US", MCC: "310", MNC: "260", NNC: "650", Network: "US mobile", Carrier: "T-Mobile"},
+}, "US")
+
+info := resolver.LookupWithRegion("6502530000", "US")
+fmt.Println(info.E164, info.CountryCode, info.MCC, info.MNC, info.Network, info.Carrier)
+```
+
+## Example: protocol capability validation
+
+```go
+cap := protocol.Capabilities(protocol.Version50)
+fmt.Println(cap.SupportsCellBroadcast) // true
+
+err := protocol.ValidatePDUForVersion(protocol.Version34, protocol.PDU{
+    CommandID: protocol.BroadcastSM,
+})
+// err: broadcast_sm is not supported by SMPP 3.4
+```
+
+## Example: provider routing
+
+```go
+r := routing.New()
+r.RegisterProvider(provider.Modern50("p-fast", "127.0.0.1:2775", "sys", "pw"))
+r.RegisterProvider(provider.Generic34("p-cheap", "127.0.0.1:2776", "sys", "pw"))
+r.UpdateProviderStats(routing.ProviderStats{ProviderID: "p-fast", QualityScore: 98, AvgLatency: 20*time.Millisecond, CostPerSegment: .02})
+r.UpdateProviderStats(routing.ProviderStats{ProviderID: "p-cheap", QualityScore: 90, AvgLatency: 80*time.Millisecond, CostPerSegment: .005})
+
+ar := routing.NewAdvanced(r, routing.Policy{Strategy: routing.StrategyLeastCost})
+decision, _ := ar.Route(ctx, message.SubmitRequest{From: "Brand", To: "+9779841000000", Text: "hello"})
+fmt.Println(decision.Provider.ID)
+```
+
+## Example: SQL store
+
+```go
+// Import the DB driver in your application, then pass *sql.DB.
+st := storage.NewSQL(db)
+_ = st.Migrate(ctx)
+```
+
+The SQL implementation uses `database/sql` and does not force a specific driver. The default migration is intentionally simple and suitable for SQLite/PostgreSQL-style development. For MySQL or strict PostgreSQL production deployments, keep the interface and adjust the migration DDL in your app migration tool.
+
+## Examples
+
+- `examples/all_operations` — all SMPP command builders/parsers.
+- `examples/advanced_protocol` — protocol matrix and advanced command coverage.
+- `examples/api_server` — REST API over the service layer.
+- `examples/async_service` — queue worker based sending.
+- `examples/client` — SMPP client.
+- `examples/mockserver` — runnable SMPP server.
+- `examples/provider_routing` — routing rules.
+- `examples/routing_queue` — route plus queue flow.
+- `examples/text_manager` — encoding and multipart SMS.
+- `examples/production_platform` — account, routing, metrics and number intelligence components.
+
+## Production notes
+
+This codebase now contains concrete implementations for the core SMPP platform layers and passes `go test ./...`. A live carrier deployment still needs environment-specific work that cannot be truthfully pre-certified in a static zip: vendor certification fixtures, real carrier DLR samples, real HLR/MNP/carrier intelligence adapters, real DB driver selection, TLS certificates, operational runbooks, load testing against the target throughput, and country-specific regulatory policy data.
+
+
+## Essential production features still requiring live environment integration
+
+The codebase now has protocol, routing, session, queue, storage, phone intelligence, metrics and server/client foundations. These remaining items are essential for a real carrier-grade deployment because they require live provider contracts, infrastructure credentials or regulatory inputs that cannot be truthfully completed in a generic archive:
+
+1. **Live SMPP vendor certification packs**: provider-specific bind settings, TLV quirks, TON/NPI rules, DLR samples, throttling behavior and acceptance tests for each carrier/aggregator.
+2. **HLR/MNP/roaming adapters**: commercial lookup integrations to confirm active SIM, current carrier, ported carrier, roaming state, reachability and fraud signals.
+3. **Regulatory country rule database**: sender ID registration, template approval, DLT/10DLC/TCPA/GDPR/local opt-out rules, quiet hours and per-country content restrictions.
+4. **Production secret/KMS integration**: HashiCorp Vault, cloud KMS/HSM, credential rotation workflow and encrypted-at-rest provider secrets.
+5. **Real durable queue backends**: Redis Streams, NATS JetStream, Kafka, RabbitMQ or PostgreSQL advisory-lock workers with deployment-specific tuning.
+6. **HA clustering**: distributed bind ownership, active/active gateway coordination, leader election, partition-aware routing and zero-downtime rolling rebinds.
+7. **Billing/rating engine**: contract pricing, segment cost, FX, margins, invoice exports, balance reservation and prepaid/postpaid credit control.
+8. **Abuse/compliance operations**: spam scoring, URL/domain reputation, sender spoof prevention, DND lists, STOP/HELP automation and content moderation policy.
+9. **Provider SLA automation**: live canary traffic, route cooling, blackhole detection, latency SLOs and automatic provider incident creation.
+10. **Full external observability stack**: OpenTelemetry collector, Prometheus/Grafana dashboards, log pipeline, alert rules and long-retention reporting warehouse.
+11. **Packet-level interoperability lab**: tcpdump/Wireshark fixtures, malformed PDU replay, fuzz corpus, high-TPS soak testing and vendor acceptance scripts.
+12. **Admin UI and operator workflows**: bind/session viewer, route simulator, DLQ replay, DLR trace, account management, sender approval and provider maintenance controls.
+
+## Implemented remaining production modules
+
+This archive now includes concrete packages for the remaining carrier-grade platform capabilities:
+
+| Area | Package / files | What is implemented |
+|---|---|---|
+| Live SMPP certification packs | `certification` | Provider pack model, bind/window/TPS settings, TLV quirks, TON/NPI rules, DLR samples, throttling behavior, JSON import/export, submit validation and acceptance-case model. Real vendor-certified values must come from the carrier contract/interconnect document; the framework executes them without code changes. |
+| HLR/MNP/roaming adapters | `lookup` | Chainable lookup adapters, `phone`-backed normalization, static HLR/MNP fixture adapter, HTTP JSON adapter for commercial HLR/MNP/SIM-swap/reachability/fraud APIs, result merge semantics. |
+| Regulatory country rules | `regulation` | Country rules for sender registration, template approval, DLT/10DLC/TCPA/GDPR/local opt-out flags, DND/opt-out lists, quiet hours, blocked content, required footers, registered template regexes. |
+| Production secrets/KMS | `secrets` | AES-GCM local KMS, encrypted secret store, rotation workflow, HashiCorp Vault transit adapter, redaction helpers. Cloud KMS/HSM integrations can implement the same `KMS` interface. |
+| Durable queues | `durablequeue` | `Backend` interface, PostgreSQL/SKIP LOCKED worker queue, Redis Streams RESP adapter, external backend wrapper for NATS JetStream, Kafka and RabbitMQ client bindings. |
+| HA clustering | `cluster` | Node heartbeat, bind lease ownership, TTL renewal/release, active/draining/down states, partition-aware key owner selection and zero-downtime drain primitive. |
+| Billing/rating | `billing` | Contract price rules, segment cost/sell/margin, FX conversion table, prepaid balance reservation/capture/release, invoice CSV export. |
+| Abuse/compliance operations | `compliance` | Spam/content regex scoring, URL extraction, domain reputation scoring, sender verification/anti-spoof policy, STOP/HELP automation, opt-out handling, content fingerprinting. |
+| Provider SLA automation | `sla` | Canary sender interface, SLO definitions, blackhole detection, provider cooldown, router quality penalty, incident sink integration. |
+| External observability stack | `observability`, `observability/deploy` | OpenTelemetry/Prometheus/Grafana/alert config models and deployment files: `otel-collector.yaml`, `prometheus.yml`, `alerts.yml`, `grafana-dashboard.json`. |
+| Packet-level interoperability lab | `lab` | Hex fixture load/save, malformed PDU replay, fuzz corpus mutation, tcpdump wrapper, high-TPS soak test harness. |
+
+Run the combined example:
 
 ```bash
-go run ./examples/all_features
+go run ./examples/remaining_features
 ```
 
-```bash
-go run ./examples/async_service
-```
-
-```bash
-go run ./examples/advanced_protocol
-go run ./examples/address_detection
-```
-
-```bash
-go run ./examples/text_manager
-```
-
-```bash
-go run ./examples/hooks_events
-```
-
-```bash
-go run ./examples/routing_queue
-```
-
-```bash
-go run ./examples/reports
-```
-
-```bash
-go run ./examples/api_server
-```
-
-API example request after starting `examples/api_server`:
-
-```bash
-curl -s http://127.0.0.1:8088/v1/messages/send \
-  -H 'content-type: application/json' \
-  -d '{"tenant_id":"tenant-a","from":"OARK","to":"9779800000000","text":"Hello via API 👋","registered_delivery":1}'
-```
-
-## Test
+Run the full validation suite:
 
 ```bash
 go test ./...
 ```
 
-## Package map
+### Important deployment note
 
-```text
-api/           HTTP API wrapper
-codec/         binary PDU codec
-events/        event bus
-hooks/         hook manager
-lifecycle/     connection/message lifecycle states
-message/       message manager, text manager, DLR parser
-protocol/      SMPP types, constants, PDU builders/parsers, TLVs
-provider/      provider/vendor capability profiles
-queue/         durable-style in-memory priority/retry/DLQ queue
-reports/       JSON/CSV reports
-routing/       provider routing engine
-server/        mock SMSC/server
-service/       high-level async SMS service
-session/       SMPP client/session runtime
-storage/       storage interfaces and memory store
-examples/      runnable examples for features, clients, services
-```
-
-## Production extension checklist
-
-The current package is runnable and tested. For a live carrier-certified deployment, add your vendor-specific modules through the included interfaces:
-
-- PostgreSQL/MySQL/Redis storage implementation.
-- Kafka/NATS/Redis event stream implementation.
-- Provider-certified DLR parsers and message ID normalizers.
-- Country/regulatory validators.
-- Credential vault integration.
-- Webhook dispatcher with signing and retry.
-- XLSX/PDF report writers if needed.
-- Full carrier certification fixtures for each provider.
-
-## Complete SMPP operation coverage
-
-This build includes an executable operation matrix for SMPP 3.3, 3.4 and 5.0 in `protocol.AllOperations` with runtime helpers:
-
-- `protocol.SupportsCommand(version, command)`
-- `protocol.CommandsForVersion(version)`
-- `protocol.OperationByCommand(command)`
-
-Covered command families:
-
-- Session: `bind_receiver`, `bind_transmitter`, `bind_transceiver`, `outbind`, `unbind`, `enquire_link`, `generic_nack`
-- Messaging: `submit_sm`, `submit_multi`, `deliver_sm`, `data_sm`
-- Message management: `query_sm`, `replace_sm`, `cancel_sm`
-- Notifications: `alert_notification`
-- SMPP 5.0 broadcast: `broadcast_sm`, `query_broadcast_sm`, `cancel_broadcast_sm`
-
-Runnable coverage examples:
-
-```bash
-go run ./examples/protocol_matrix
-go run ./examples/all_operations
-```
-
-`examples/all_operations` starts a local mock SMPP 5.0 SMSC, binds a transceiver client, and exercises submit, multi-submit, data_sm, query, replace, cancel, broadcast, query broadcast, cancel broadcast, outbind builder/parser, and alert notification builder/parser.
-
-## Version behavior
-
-- SMPP 3.3 exposes transmitter/receiver binds and classic submit/query/replace/cancel/deliver operations.
-- SMPP 3.4 adds transceiver bind, submit_multi, data_sm, outbind, alert_notification and TLV-heavy interoperability.
-- SMPP 5.0 adds broadcast command coverage in addition to the SMPP 3.4 command family.
-
-The mock server now validates commands against the bound interface version and returns `generic_nack` with `ESME_RINVCMDID` when a command is not valid for that session version.
-storage/       message/DLR storage interfaces and memory adapter
-account/       user, API-key, and provider credential storage adapter
-```
-
-## New provider routing and credential capabilities
-
-The platform now includes a production-style routing layer intended for multiple providers and multiple tenants/users.
-
-### Provider registration
-
-Providers are registered through `routing.Router.RegisterProvider` or `service.Service.RegisterProvider`. A provider profile contains SMPP version, bind mode, TPS, window size, multipart mode, DLR behavior, capabilities, TON/NPI defaults, TLS preference, and vendor metadata.
-
-### User and credential storage
-
-The `account` package provides the storage adapter contract and a safe in-memory implementation for:
-
-- users
-- roles
-- tenant IDs
-- API keys with hashed secrets
-- API key authentication
-- provider credentials per tenant/provider
-- provider credential redaction for logs, examples, and admin output
-
-Production systems can replace `account.Memory` with a PostgreSQL, MySQL, SQLite, Redis, Vault, or KMS-backed adapter without changing the service and routing code.
-
-### Fast provider routing
-
-The routing engine now supports indexed candidate selection and scoring by:
-
-- tenant
-- user ID from `SubmitRequest.Meta["user_id"]`
-- recipient prefix/country route
-- sender ID
-- provider priority
-- provider weight
-- provider quality score
-- delivery rate
-- average latency
-- current TPS and max TPS
-- cost per segment
-- minimum quality policy
-- maximum cost policy
-- fallback quality routing
-
-This gives predictable route selection while remaining fast enough for high-throughput SMS submission pipelines. The router keeps indexes for tenant, tenant+sender, tenant+user, and longest recipient prefixes to avoid scanning every rule for common cases.
-
-### Examples for this feature
-
-```bash
-go run ./examples/provider_routing
-```
-
-```bash
-go run ./examples/provider_registration
-```
-
-```bash
-go run ./examples/credentials_store
-```
-
-See [`examples/README.md`](examples/README.md) and each example directory README for usage notes and production adaptation checklists.
+The code includes complete adapter contracts and runnable local implementations. For live SMPP vendor certification, HLR/MNP/SIM-swap providers, Vault, Redis, PostgreSQL, NATS, Kafka, RabbitMQ and observability backends, production credentials/endpoints and vendor-specific certification documents are required at deployment time. Those commercial values cannot be truthfully embedded in an open archive, but the packages are ready to consume them through JSON/config/interfaces without changing core code.

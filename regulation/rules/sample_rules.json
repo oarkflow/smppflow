@@ -1,0 +1,20 @@
+[
+  {
+    "country":"US",
+    "sender_registration_required":true,
+    "ten_dlc_required":true,
+    "tcpa_required":true,
+    "local_opt_out_required":true,
+    "quiet_hours":[{"start":"21:00","end":"08:00","timezone":"America/New_York"}],
+    "blocked_patterns":["regex:(?i)free\\s+money"],
+    "required_footer":["STOP"]
+  },
+  {
+    "country":"IN",
+    "sender_registration_required":true,
+    "template_approval_required":true,
+    "dlt_required":true,
+    "local_opt_out_required":true,
+    "registered_templates":{"otp":"^Your OTP is [0-9]{4,8}.*$"}
+  }
+]
