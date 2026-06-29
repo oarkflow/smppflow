@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oarkflow/smppflow/protocol"
+	"github.com/oarkflow/smppflow/pkg/protocol"
 )
 
 func main() {

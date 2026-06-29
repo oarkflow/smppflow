@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oarkflow/smppflow/message"
-	"github.com/oarkflow/smppflow/provider"
-	"github.com/oarkflow/smppflow/queue"
-	"github.com/oarkflow/smppflow/routing"
+	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/provider"
+	"github.com/oarkflow/smppflow/pkg/queue"
+	"github.com/oarkflow/smppflow/pkg/routing"
 )
 
 func main() {

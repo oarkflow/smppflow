@@ -6,8 +6,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/oarkflow/smppflow/protocol"
-	"github.com/oarkflow/smppflow/server"
+	"github.com/oarkflow/smppflow/pkg/protocol"
+	"github.com/oarkflow/smppflow/pkg/server"
 )
 
 func main() {

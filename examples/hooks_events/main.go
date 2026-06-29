@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oarkflow/smppflow/events"
-	"github.com/oarkflow/smppflow/hooks"
+	"github.com/oarkflow/smppflow/pkg/events"
+	"github.com/oarkflow/smppflow/pkg/hooks"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/oarkflow/smppflow/intelligence"
+	"github.com/oarkflow/smppflow/pkg/intelligence"
 )
 
 func main() {

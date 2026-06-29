@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/oarkflow/smppflow/lifecycle"
-	"github.com/oarkflow/smppflow/message"
-	"github.com/oarkflow/smppflow/reports"
-	"github.com/oarkflow/smppflow/storage"
 	"time"
+
+	"github.com/oarkflow/smppflow/pkg/lifecycle"
+	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/reports"
+	"github.com/oarkflow/smppflow/pkg/storage"
 )
 
 func main() {

@@ -1,0 +1,19 @@
+package routing
+
+import (
+	"context"
+	"testing"
+
+	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/provider"
+)
+
+func TestRouteByPrefix(t *testing.T) {
+	r := New()
+	r.AddProvider(provider.Generic34("np", "addr", "sys", "pw"))
+	r.AddRule(Rule{ID: "np", Prefix: "977", ProviderID: "np", Priority: 1})
+	d, err := r.Route(context.Background(), message.SubmitRequest{To: "9771"})
+	if err != nil || d.Provider.ID != "np" || d.Rule.ID != "np" {
+		t.Fatalf("decision %+v err=%v", d, err)
+	}
+}

@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/oarkflow/smppflow/protocol"
-	"github.com/oarkflow/smppflow/server"
-	"github.com/oarkflow/smppflow/session"
+	"github.com/oarkflow/smppflow/pkg/protocol"
+	"github.com/oarkflow/smppflow/pkg/server"
+	"github.com/oarkflow/smppflow/pkg/session"
 )
 
 func main() {

@@ -7,15 +7,15 @@ import (
 	"log"
 	"time"
 
-	"github.com/oarkflow/smppflow/events"
-	"github.com/oarkflow/smppflow/hooks"
-	"github.com/oarkflow/smppflow/message"
-	"github.com/oarkflow/smppflow/provider"
-	"github.com/oarkflow/smppflow/reports"
-	"github.com/oarkflow/smppflow/routing"
-	"github.com/oarkflow/smppflow/server"
-	"github.com/oarkflow/smppflow/service"
-	"github.com/oarkflow/smppflow/storage"
+	"github.com/oarkflow/smppflow/pkg/events"
+	"github.com/oarkflow/smppflow/pkg/hooks"
+	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/provider"
+	"github.com/oarkflow/smppflow/pkg/reports"
+	"github.com/oarkflow/smppflow/pkg/routing"
+	"github.com/oarkflow/smppflow/pkg/server"
+	"github.com/oarkflow/smppflow/pkg/service"
+	"github.com/oarkflow/smppflow/pkg/storage"
 )
 
 func main() {

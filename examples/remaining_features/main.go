@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oarkflow/smppflow/billing"
-	"github.com/oarkflow/smppflow/certification"
-	"github.com/oarkflow/smppflow/cluster"
-	"github.com/oarkflow/smppflow/compliance"
-	"github.com/oarkflow/smppflow/lab"
-	"github.com/oarkflow/smppflow/lookup"
-	"github.com/oarkflow/smppflow/message"
-	"github.com/oarkflow/smppflow/observability"
-	"github.com/oarkflow/smppflow/regulation"
-	"github.com/oarkflow/smppflow/secrets"
+	"github.com/oarkflow/smppflow/pkg/billing"
+	"github.com/oarkflow/smppflow/pkg/certification"
+	"github.com/oarkflow/smppflow/pkg/cluster"
+	"github.com/oarkflow/smppflow/pkg/compliance"
+	"github.com/oarkflow/smppflow/pkg/lab"
+	"github.com/oarkflow/smppflow/pkg/lookup"
+	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/observability"
+	"github.com/oarkflow/smppflow/pkg/regulation"
+	"github.com/oarkflow/smppflow/pkg/secrets"
 )
 
 type fakeHandler struct{}

@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/oarkflow/smppflow/message"
 	"strings"
+
+	"github.com/oarkflow/smppflow/pkg/message"
 )
 
 func main() {

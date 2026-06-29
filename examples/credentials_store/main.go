@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/oarkflow/smppflow/account"
+
+	"github.com/oarkflow/smppflow/pkg/account"
 )
 
 func main() {

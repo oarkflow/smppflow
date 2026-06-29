@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/oarkflow/smppflow/protocol"
+	"github.com/oarkflow/smppflow/pkg/protocol"
 )
 
 func main() {

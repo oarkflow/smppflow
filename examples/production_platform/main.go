@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/oarkflow/smppflow/intelligence"
-	"github.com/oarkflow/smppflow/observability"
-	"github.com/oarkflow/smppflow/protocol"
-	"github.com/oarkflow/smppflow/provider"
-	"github.com/oarkflow/smppflow/routing"
-	"github.com/oarkflow/smppflow/security"
-	"github.com/oarkflow/smppflow/smppserver"
+	"github.com/oarkflow/smppflow/pkg/intelligence"
+	"github.com/oarkflow/smppflow/pkg/observability"
+	"github.com/oarkflow/smppflow/pkg/protocol"
+	"github.com/oarkflow/smppflow/pkg/provider"
+	"github.com/oarkflow/smppflow/pkg/routing"
+	"github.com/oarkflow/smppflow/pkg/security"
+	"github.com/oarkflow/smppflow/pkg/smppserver"
 )
 
 func main() {

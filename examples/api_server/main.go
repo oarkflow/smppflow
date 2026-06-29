@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"time"
 
-	smppapi "github.com/oarkflow/smppflow/api"
-	"github.com/oarkflow/smppflow/provider"
-	"github.com/oarkflow/smppflow/routing"
-	"github.com/oarkflow/smppflow/server"
-	"github.com/oarkflow/smppflow/service"
-	"github.com/oarkflow/smppflow/storage"
+	smppapi "github.com/oarkflow/smppflow/pkg/api"
+	"github.com/oarkflow/smppflow/pkg/provider"
+	"github.com/oarkflow/smppflow/pkg/routing"
+	"github.com/oarkflow/smppflow/pkg/server"
+	"github.com/oarkflow/smppflow/pkg/service"
+	"github.com/oarkflow/smppflow/pkg/storage"
 )
 
 func main() {
