@@ -142,7 +142,7 @@ func (s *Service) Send(ctx context.Context, req message.SubmitRequest) (message.
 		return message.SubmitResult{}, err
 	}
 	useSAR := req.UseSAR || prof.Multipart == provider.MultipartSAR
-	mgr := message.NewManager(message.ManagerConfig{Client: cli, Store: s.cfg.Store, Bus: s.cfg.Bus, Hooks: s.cfg.Hooks, DefaultSourceTON: prof.SourceTON, DefaultSourceNPI: prof.SourceNPI, DefaultDestTON: prof.DestTON, DefaultDestNPI: prof.DestNPI, UseSAR: useSAR})
+	mgr := message.NewManager(message.ManagerConfig{Client: cli, Store: s.cfg.Store, Bus: s.cfg.Bus, Hooks: s.cfg.Hooks, DefaultSourceTON: prof.SourceTON, DefaultSourceNPI: prof.SourceNPI, DefaultDestTON: prof.DestTON, DefaultDestNPI: prof.DestNPI, ProviderID: prof.ID, Taxonomy: message.NewErrorTaxonomy(), UseSAR: useSAR})
 	mgr.StartInbound(ctx)
 	return mgr.Submit(ctx, req)
 }
@@ -189,3 +189,7 @@ func (s *Service) Close(ctx context.Context) error {
 	s.cfg.Queue.Close()
 	return nil
 }
+
+func (s *Service) Queue() *queue.Memory    { return s.cfg.Queue }
+func (s *Service) Router() *routing.Router { return s.cfg.Router }
+func (s *Service) Store() message.Store    { return s.cfg.Store }

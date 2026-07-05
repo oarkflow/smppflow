@@ -39,6 +39,7 @@ type Memory struct {
 	dlq    []*Job
 	cond   *sync.Cond
 	closed bool
+	paused bool
 }
 
 func NewMemory() *Memory { q := &Memory{}; q.cond = sync.NewCond(&q.mu); return q }
@@ -73,6 +74,15 @@ func (q *Memory) Reserve(ctx context.Context) (*Job, error) {
 		if q.closed {
 			q.mu.Unlock()
 			return nil, errors.New("queue closed")
+		}
+		if q.paused {
+			q.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				continue
+			}
 		}
 		now := time.Now()
 		idx := -1
@@ -145,3 +155,47 @@ func (q *Memory) Snapshot() []Job {
 	return out
 }
 func (q *Memory) Close() { q.mu.Lock(); q.closed = true; q.cond.Broadcast(); q.mu.Unlock() }
+
+func (q *Memory) Pause()  { q.mu.Lock(); q.paused = true; q.mu.Unlock() }
+func (q *Memory) Resume() { q.mu.Lock(); q.paused = false; q.cond.Broadcast(); q.mu.Unlock() }
+func (q *Memory) Cancel(ctx context.Context, id string) error {
+	_ = ctx
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, j := range q.jobs {
+		if j.ID == id {
+			q.jobs = append(q.jobs[:i], q.jobs[i+1:]...)
+			j.State = JobFailed
+			j.LastError = "cancelled"
+			q.dlq = append(q.dlq, j)
+			return nil
+		}
+	}
+	return errors.New("job not found")
+}
+func (q *Memory) ReplayDLQ(ctx context.Context, ids ...string) error {
+	_ = ctx
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	replayAll := len(want) == 0
+	kept := q.dlq[:0]
+	for _, j := range q.dlq {
+		if replayAll || want[j.ID] {
+			cp := *j
+			cp.State = JobQueued
+			cp.LastError = ""
+			cp.RunAt = time.Now()
+			cp.UpdatedAt = time.Now()
+			q.jobs = append(q.jobs, &cp)
+		} else {
+			kept = append(kept, j)
+		}
+	}
+	q.dlq = kept
+	q.cond.Broadcast()
+	return nil
+}

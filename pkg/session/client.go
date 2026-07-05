@@ -60,6 +60,8 @@ func NewClient(cfg Config) *Client {
 	return &Client{cfg: cfg, state: lifecycle.ConnNew, pending: map[uint32]chan protocol.PDU{}, inbound: make(chan protocol.PDU, 128), closed: make(chan struct{})}
 }
 func (c *Client) State() lifecycle.ConnectionState     { c.mu.Lock(); defer c.mu.Unlock(); return c.state }
+func (c *Client) WindowSize() int                      { return c.cfg.WindowSize }
+func (c *Client) Pending() int                         { c.pendingMu.Lock(); defer c.pendingMu.Unlock(); return len(c.pending) }
 func (c *Client) setState(s lifecycle.ConnectionState) { c.mu.Lock(); c.state = s; c.mu.Unlock() }
 func (c *Client) NextSeq() uint32 {
 	n := c.seq.Add(1)

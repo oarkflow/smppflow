@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	phone "github.com/oarkflow/phone"
 )
 
 type Result struct {
@@ -124,18 +123,32 @@ type PhoneAdapter struct{}
 
 func (PhoneAdapter) Lookup(ctx context.Context, number, country string) (Result, error) {
 	_ = ctx
-	v := phone.Verify(number)
-	r := Result{Number: number, LookupAt: time.Now(), Source: "phone"}
-	r.Raw = map[string]any{"verified": v}
-	if n, err := phone.Parse(number, country); err == nil {
-		r.E164 = phone.Format(n, phone.E164)
-		r.Country = country
-		r.Reachable = true
-		r.ActiveSIM = !v.Invalid
-	} else if v.Invalid {
-		return r, err
+	e164 := normalize(number)
+	valid := len(e164) >= 8 && len(e164) <= 16
+	r := Result{Number: number, E164: e164, Country: country, LookupAt: time.Now(), Source: "builtin-phone", Reachable: valid, ActiveSIM: valid}
+	r.Raw = map[string]any{"possible": valid}
+	if !valid {
+		return r, fmt.Errorf("invalid phone number")
 	}
 	return r, nil
+}
+
+func normalize(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '+' && len(b) == 0 {
+			b = append(b, c)
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			b = append(b, c)
+		}
+	}
+	if len(b) > 0 && b[0] != '+' {
+		b = append([]byte{'+'}, b...)
+	}
+	return string(b)
 }
 
 type StaticAdapter struct {

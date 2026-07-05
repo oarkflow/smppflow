@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-
-	phone "github.com/oarkflow/phone"
 )
 
 // NumberInfo is the normalized phone intelligence record used by routing,
@@ -106,11 +104,20 @@ func Normalize(s string) string {
 }
 
 func NormalizeWithRegion(s, region string) string {
-	info := Verify(s, region)
-	if info.E164 != "" {
-		return info.E164
+	reg := strings.ToUpper(strings.TrimSpace(region))
+	n := Normalize(s)
+	digits := strings.TrimPrefix(n, "+")
+	if reg == "US" || reg == "CA" {
+		if len(digits) == 10 {
+			return "+1" + digits
+		}
 	}
-	return Normalize(s)
+	if reg == "NP" {
+		if len(digits) == 10 && strings.HasPrefix(digits, "9") {
+			return "+977" + digits
+		}
+	}
+	return n
 }
 
 func Verify(s string, region ...string) NumberInfo {
@@ -120,23 +127,19 @@ func Verify(s string, region ...string) NumberInfo {
 	}
 	info := NumberInfo{Original: s, RegionHint: reg, Meta: map[string]string{}}
 
-	// Use the enriched convenience API requested by the platform owner.
-	verified := phone.Verify(s)
-	mergePhoneValue(&info, verified)
-
-	// Region-aware parse improves national input such as "6502530000" with "US".
+	// Conservative built-in normalization keeps smppflow dependency-light and
+	// deterministic for gateway decisions. Applications can add enrichers for
+	// HLR/MNP/carrier-grade validation.
+	info.E164 = NormalizeWithRegion(s, reg)
+	info.Possible = len(strings.TrimPrefix(info.E164, "+")) >= 7
+	info.Valid = info.Possible && len(strings.TrimPrefix(info.E164, "+")) <= 15
+	info.International = info.E164
+	info.RFC3966 = "tel:" + info.E164
 	if reg != "" {
-		if num, err := phone.Parse(s, reg); err == nil {
-			info.E164 = phone.Format(num, phone.E164)
-			info.National = phone.Format(num, phone.NATIONAL)
-			info.International = phone.Format(num, phone.INTERNATIONAL)
-			info.RFC3966 = phone.Format(num, phone.RFC3966)
-			info.Valid = true
-			info.Possible = true
-		}
+		info.CountryCode = reg
 	}
 	if info.E164 == "" {
-		info.E164 = Normalize(s)
+		info.E164 = NormalizeWithRegion(s, reg)
 	}
 	if info.International == "" && strings.HasPrefix(info.E164, "+") {
 		info.International = info.E164
