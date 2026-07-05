@@ -355,8 +355,19 @@ func (o *Operations) SimulateRoute(ctx context.Context, req message.SubmitReques
 	if o.Router == nil {
 		return RouteSimulation{}, errors.New("nil router")
 	}
-	dec, err := o.Router.Route(ctx, req)
-	sim := RouteSimulation{Request: req, Decision: dec, ComplianceAllowed: true}
+	plan, err := o.Router.Simulate(ctx, req)
+	sim := RouteSimulation{Request: req, ComplianceAllowed: true}
+	if plan.Decision != nil {
+		sim.Decision = *plan.Decision
+	}
+	for _, r := range plan.Rejected {
+		if r.ProviderID != "" {
+			sim.RejectedProviders = append(sim.RejectedProviders, r.ProviderID)
+		}
+		for _, reason := range r.RejectedBy {
+			sim.Reasons = append(sim.Reasons, string(reason))
+		}
+	}
 	if err != nil {
 		sim.Reasons = append(sim.Reasons, err.Error())
 		return sim, err

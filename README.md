@@ -1,250 +1,467 @@
 # smppflow
 
-`smppflow` is a production-oriented SMPP server/client platform in Go. It implements SMPP 3.3, 3.4 and 5.0 protocol coverage, server/client sessions, routing, message management, multipart SMS handling, DLR parsing, queueing, storage interfaces, hooks/events, reporting, and operational components for carrier-grade SMS gateways.
+`smppflow` is a Go SMPP platform with a focused runnable demo containing only two examples:
 
-## Implemented capability map
+```text
+examples/server  # SMPP SMSC simulator + HTTP API + routing + queue + reporting
+examples/client  # HTTP API client + low-level SMPP client
+```
 
-### Protocol
+All older examples were removed so the project has a single clear way to run and verify the platform.
 
-- SMPP versions: 3.3, 3.4, 5.0.
-- Full command constants and builders/parsers for common operations:
-  - bind receiver/transmitter/transceiver
-  - unbind
-  - enquire_link
-  - generic_nack
-  - submit_sm
-  - submit_multi
-  - deliver_sm
-  - data_sm
-  - query_sm
-  - cancel_sm
-  - replace_sm
-  - outbind
-  - alert_notification
-  - broadcast_sm
-  - query_broadcast_sm
-  - cancel_broadcast_sm
-- Version capability matrix through `protocol.Capabilities`.
-- Version validation through `protocol.ValidatePDUForVersion`.
-- Version negotiation through `protocol.NegotiateVersion`.
-- Complete standard TLV registry with v3.4/v5.0 metadata.
-- v5-focused TLVs for congestion state, billing, endpoint identification, USSD and number portability.
-- PDU codec with max-length protection.
-- TON/NPI address auto-detection.
+## What the demo covers
 
-### Client/session runtime
+The server example starts both:
 
-- SMPP TCP/TLS client.
-- Bind, reconnect primitives, heartbeat, enquire_link handling.
-- Windowed request/response tracking.
-- Submit, data_sm, submit_multi, query, cancel, replace, broadcast APIs.
-- Async inbound PDU channel.
-- Managed provider session manager with health, bind latency and failure tracking.
+- an SMPP listener on `:2775`
+- an HTTP API listener on `:8080`
 
-### Server runtime
+It wires:
 
-- Runnable SMPP server/SMSC simulator.
-- Auth hook.
-- Bind handling and version negotiation.
-- submit_sm/data_sm/query/cancel/replace/submit_multi/broadcast handlers.
-- Auto DLR support.
-- Alert/outbind PDU coverage.
-- Production account wrapper package with hashed credentials, bind modes, bind limits and session registry primitives.
+- SMPP bind authentication
+- `submit_sm`, `deliver_sm`, `data_sm`, `query_sm`, `submit_multi`, `replace_sm`, `cancel_sm`
+- automatic DLR simulation
+- async queue workers
+- routing with a single production router
+- route validation
+- capacity reservation
+- circuit breaker and SLA feedback
+- message lifecycle and DLR persistence
+- manager/admin endpoints
+- reports and NDJSON export
+- contacts, opt-outs, rate-limit policies, alerts
+- structured logging with full JSON bodies, no truncation/skipping
 
-### Message platform
+The client example verifies:
 
-- Message manager.
-- GSM 7-bit subset and UCS-2 detection.
-- Multipart UDH and SAR TLV segmentation.
-- Emoji/Unicode-safe UCS-2 encoding.
-- Inbound deliver_sm handling.
-- DLR parsing from text and TLVs.
-- Segment records with provider message IDs.
-- Lifecycle states for created, segmented, queued, submitted, accepted, delivered, failed, expired, rejected, dead-lettered and archived.
+- HTTP health
+- route simulation
+- synchronous send
+- async enqueue
+- message/DLR/report/admin APIs
+- low-level SMPP bind
+- `submit_sm`
+- inbound DLR `deliver_sm`
+- `deliver_sm_resp`
+- `query_sm`
+- `data_sm`
+- `submit_multi`
+- `replace_sm`
+- `cancel_sm`
 
-### Routing
+## Logging format
 
-- Provider registry.
-- Tenant, user, sender, prefix and fallback routing.
-- Quality/cost/latency scoring.
-- Advanced strategies:
-  - best quality
-  - least cost
-  - fastest latency
-  - weighted routing
-- Provider cooldown support.
-- Provider stats for TPS, delivery rate, failures, latency and cost.
+Default logs are JSON lines using Go `log/slog` JSON handler.
 
-### Storage and queue
+Unlike the previous version, HTTP response bodies are logged as structured JSON objects/arrays instead of escaped JSON strings. The client also reads full response bodies; it does not truncate at 4 KB.
 
-- Memory message/DLR store.
-- Portable `database/sql` store abstraction for PostgreSQL/MySQL/SQLite style drivers supplied by the application.
-- SQL migrations for messages and DLRs.
-- Memory durable-like queue with retry/dead-letter behavior.
-- Queue workers in service layer.
+Example body logging now looks like this:
 
-### Security
+```json
+{"msg":"http.get","url":"http://127.0.0.1:8080/v1/messages","status":200,"body":[{"ID":"msg-...","TenantID":"tenant-a","State":"delivered"}]}
+```
 
-- Secret hashing and constant-time comparison.
-- IP allow/deny CIDR policy.
-- Token-bucket rate limiter.
-- Redaction helper.
-- Account model with tenant ID, system ID, allowed bind modes, source policy and TPS metadata.
+For human text logs:
 
-### Observability/reporting
+```bash
+go run ./examples/server --log-format text
+go run ./examples/client --log-format text
+```
 
-- Event bus with wildcard subscription.
-- Lifecycle hooks.
-- Prometheus-style metrics registry.
-- Summary reports.
-- API server exposing send, enqueue, list messages, list DLRs, reports and health.
+For machine-readable logs:
 
-### Number intelligence
+```bash
+go run ./examples/server --log-format json
+go run ./examples/client --log-format json
+```
 
-- Country-aware phone parsing and formatting using `github.com/oarkflow/phone@v0.0.7`.
-- `phone.Parse(number, region)`, `phone.Format`, and `phone.Verify` backed validation path.
-- E.164, national, international and RFC3966 formatted output.
-- Prefix/enrichment overlays for country, MCC, MNC, NNC/NDC, network, carrier, type and line type.
-- Blacklist/whitelist primitives.
-- HLR, MNP, carrier, roaming and fraud lookup extension hooks via `intelligence.Enricher`.
+## Requirements
 
-## Quick start
+```bash
+go version
+```
+
+Recommended:
+
+```text
+Go 1.23+
+```
+
+## Run tests
 
 ```bash
 go test ./...
-go run ./examples/mockserver
+```
+
+Expected:
+
+```text
+PASS
+```
+
+## Start the server
+
+```bash
+go run ./examples/server
+```
+
+Expected logs:
+
+```json
+{"msg":"smpp.server.start","addr":":2775","system_id":"smppclient"}
+{"msg":"http.server.start","addr":":8080"}
+{"msg":"ready","smpp":":2775","http":":8080"}
+{"msg":"usage.health","command":"curl -s http://127.0.0.1:8080/healthz"}
+{"msg":"usage.send","command":"curl -s -X POST http://127.0.0.1:8080/v1/messages/send ..."}
+{"msg":"usage.client","command":"go run ./examples/client --http http://127.0.0.1:8080 --smpp 127.0.0.1:2775 ..."}
+```
+
+The server accepts this default SMPP bind:
+
+```text
+system_id: smppclient
+password:  password
+bind mode: transceiver
+```
+
+Custom ports:
+
+```bash
+go run ./examples/server \
+  --smpp :29975 \
+  --http :18080 \
+  --provider-addr 127.0.0.1:29975
+```
+
+## Run the client
+
+With default ports:
+
+```bash
 go run ./examples/client
-go run ./examples/production_platform
-go run ./examples/phone_intelligence
 ```
 
-
-## Phone intelligence example
-
-```go
-import phone "github.com/oarkflow/phone"
-
-num, err := phone.Parse("6502530000", "US")
-formattedNum := phone.Format(num, phone.NATIONAL)
-verified := phone.Verify("+1 650 253 0000")
-
-_ = err
-_ = formattedNum
-_ = verified
-```
-
-The SMPP platform wraps the same library through `intelligence.Resolver`:
-
-```go
-resolver := intelligence.NewResolverWithRegion([]intelligence.PrefixEntry{
-    {Prefix: "+1650", CountryCode: "US", MCC: "310", MNC: "260", NNC: "650", Network: "US mobile", Carrier: "T-Mobile"},
-}, "US")
-
-info := resolver.LookupWithRegion("6502530000", "US")
-fmt.Println(info.E164, info.CountryCode, info.MCC, info.MNC, info.Network, info.Carrier)
-```
-
-## Example: protocol capability validation
-
-```go
-cap := protocol.Capabilities(protocol.Version50)
-fmt.Println(cap.SupportsCellBroadcast) // true
-
-err := protocol.ValidatePDUForVersion(protocol.Version34, protocol.PDU{
-    CommandID: protocol.BroadcastSM,
-})
-// err: broadcast_sm is not supported by SMPP 3.4
-```
-
-## Example: provider routing
-
-```go
-r := routing.New()
-r.RegisterProvider(provider.Modern50("p-fast", "127.0.0.1:2775", "sys", "pw"))
-r.RegisterProvider(provider.Generic34("p-cheap", "127.0.0.1:2776", "sys", "pw"))
-r.UpdateProviderStats(routing.ProviderStats{ProviderID: "p-fast", QualityScore: 98, AvgLatency: 20*time.Millisecond, CostPerSegment: .02})
-r.UpdateProviderStats(routing.ProviderStats{ProviderID: "p-cheap", QualityScore: 90, AvgLatency: 80*time.Millisecond, CostPerSegment: .005})
-
-ar := routing.NewAdvanced(r, routing.Policy{Strategy: routing.StrategyLeastCost})
-decision, _ := ar.Route(ctx, message.SubmitRequest{From: "Brand", To: "+9779841000000", Text: "hello"})
-fmt.Println(decision.Provider.ID)
-```
-
-## Example: SQL store
-
-```go
-// Import the DB driver in your application, then pass *sql.DB.
-st := storage.NewSQL(db)
-_ = st.Migrate(ctx)
-```
-
-The SQL implementation uses `database/sql` and does not force a specific driver. The default migration is intentionally simple and suitable for SQLite/PostgreSQL-style development. For MySQL or strict PostgreSQL production deployments, keep the interface and adjust the migration DDL in your app migration tool.
-
-## Examples
-
-- `examples/all_operations` — all SMPP command builders/parsers.
-- `examples/advanced_protocol` — protocol matrix and advanced command coverage.
-- `examples/api_server` — REST API over the service layer.
-- `examples/async_service` — queue worker based sending.
-- `examples/client` — SMPP client.
-- `examples/mockserver` — runnable SMPP server.
-- `examples/provider_routing` — routing rules.
-- `examples/routing_queue` — route plus queue flow.
-- `examples/text_manager` — encoding and multipart SMS.
-- `examples/production_platform` — account, routing, metrics and number intelligence components.
-
-## Production notes
-
-This codebase now contains concrete implementations for the core SMPP platform layers and passes `go test ./...`. A live carrier deployment still needs environment-specific work that cannot be truthfully pre-certified in a static zip: vendor certification fixtures, real carrier DLR samples, real HLR/MNP/carrier intelligence adapters, real DB driver selection, TLS certificates, operational runbooks, load testing against the target throughput, and country-specific regulatory policy data.
-
-
-## Essential production features still requiring live environment integration
-
-The codebase now has protocol, routing, session, queue, storage, phone intelligence, metrics and server/client foundations. These remaining items are essential for a real carrier-grade deployment because they require live provider contracts, infrastructure credentials or regulatory inputs that cannot be truthfully completed in a generic archive:
-
-1. **Live SMPP vendor certification packs**: provider-specific bind settings, TLV quirks, TON/NPI rules, DLR samples, throttling behavior and acceptance tests for each carrier/aggregator.
-2. **HLR/MNP/roaming adapters**: commercial lookup integrations to confirm active SIM, current carrier, ported carrier, roaming state, reachability and fraud signals.
-3. **Regulatory country rule database**: sender ID registration, template approval, DLT/10DLC/TCPA/GDPR/local opt-out rules, quiet hours and per-country content restrictions.
-4. **Production secret/KMS integration**: HashiCorp Vault, cloud KMS/HSM, credential rotation workflow and encrypted-at-rest provider secrets.
-5. **Real durable queue backends**: Redis Streams, NATS JetStream, Kafka, RabbitMQ or PostgreSQL advisory-lock workers with deployment-specific tuning.
-6. **HA clustering**: distributed bind ownership, active/active gateway coordination, leader election, partition-aware routing and zero-downtime rolling rebinds.
-7. **Billing/rating engine**: contract pricing, segment cost, FX, margins, invoice exports, balance reservation and prepaid/postpaid credit control.
-8. **Abuse/compliance operations**: spam scoring, URL/domain reputation, sender spoof prevention, DND lists, STOP/HELP automation and content moderation policy.
-9. **Provider SLA automation**: live canary traffic, route cooling, blackhole detection, latency SLOs and automatic provider incident creation.
-10. **Full external observability stack**: OpenTelemetry collector, Prometheus/Grafana dashboards, log pipeline, alert rules and long-retention reporting warehouse.
-11. **Packet-level interoperability lab**: tcpdump/Wireshark fixtures, malformed PDU replay, fuzz corpus, high-TPS soak testing and vendor acceptance scripts.
-12. **Admin UI and operator workflows**: bind/session viewer, route simulator, DLQ replay, DLR trace, account management, sender approval and provider maintenance controls.
-
-## Implemented remaining production modules
-
-This archive now includes concrete packages for the remaining carrier-grade platform capabilities:
-
-| Area | Package / files | What is implemented |
-|---|---|---|
-| Live SMPP certification packs | `certification` | Provider pack model, bind/window/TPS settings, TLV quirks, TON/NPI rules, DLR samples, throttling behavior, JSON import/export, submit validation and acceptance-case model. Real vendor-certified values must come from the carrier contract/interconnect document; the framework executes them without code changes. |
-| HLR/MNP/roaming adapters | `lookup` | Chainable lookup adapters, `phone`-backed normalization, static HLR/MNP fixture adapter, HTTP JSON adapter for commercial HLR/MNP/SIM-swap/reachability/fraud APIs, result merge semantics. |
-| Regulatory country rules | `regulation` | Country rules for sender registration, template approval, DLT/10DLC/TCPA/GDPR/local opt-out flags, DND/opt-out lists, quiet hours, blocked content, required footers, registered template regexes. |
-| Production secrets/KMS | `secrets` | AES-GCM local KMS, encrypted secret store, rotation workflow, HashiCorp Vault transit adapter, redaction helpers. Cloud KMS/HSM integrations can implement the same `KMS` interface. |
-| Durable queues | `durablequeue` | `Backend` interface, PostgreSQL/SKIP LOCKED worker queue, Redis Streams RESP adapter, external backend wrapper for NATS JetStream, Kafka and RabbitMQ client bindings. |
-| HA clustering | `cluster` | Node heartbeat, bind lease ownership, TTL renewal/release, active/draining/down states, partition-aware key owner selection and zero-downtime drain primitive. |
-| Billing/rating | `billing` | Contract price rules, segment cost/sell/margin, FX conversion table, prepaid balance reservation/capture/release, invoice CSV export. |
-| Abuse/compliance operations | `compliance` | Spam/content regex scoring, URL extraction, domain reputation scoring, sender verification/anti-spoof policy, STOP/HELP automation, opt-out handling, content fingerprinting. |
-| Provider SLA automation | `sla` | Canary sender interface, SLO definitions, blackhole detection, provider cooldown, router quality penalty, incident sink integration. |
-| External observability stack | `observability`, `observability/deploy` | OpenTelemetry/Prometheus/Grafana/alert config models and deployment files: `otel-collector.yaml`, `prometheus.yml`, `alerts.yml`, `grafana-dashboard.json`. |
-| Packet-level interoperability lab | `lab` | Hex fixture load/save, malformed PDU replay, fuzz corpus mutation, tcpdump wrapper, high-TPS soak test harness. |
-
-Run the combined example:
+HTTP-only:
 
 ```bash
-go run ./examples/remaining_features
+go run ./examples/client --mode http
 ```
 
-Run the full validation suite:
+SMPP-only:
 
 ```bash
+go run ./examples/client --mode smpp
+```
+
+Custom ports:
+
+```bash
+go run ./examples/client \
+  --http http://127.0.0.1:18080 \
+  --smpp 127.0.0.1:29975 \
+  --system-id smppclient \
+  --password password
+```
+
+## HTTP curl usage
+
+### Health
+
+```bash
+curl -s http://127.0.0.1:8080/healthz
+```
+
+Expected:
+
+```text
+ok
+```
+
+### Route simulation
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/manager/route/simulate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "TenantID":"tenant-a",
+    "From":"BRAND",
+    "To":"9779841000000",
+    "Text":"Your OTP is 123456",
+    "RegisteredDelivery":1,
+    "Meta":{"country":"NP","operator":"NTC","message_type":"otp"}
+  }' | jq
+```
+
+Expected response shape:
+
+```json
+{
+  "request": {...},
+  "decision": {
+    "Provider": {"ID":"local-smpp"},
+    "Rule": {"ID":"tenant-a-np-otp"},
+    "Reason":"eligible",
+    "ScoreBreakdown": {...}
+  },
+  "compliance_allowed": true,
+  "rejected_providers": []
+}
+```
+
+### Send synchronously
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/messages/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "TenantID":"tenant-a",
+    "From":"BRAND",
+    "To":"9779841000000",
+    "Text":"Your OTP is 123456",
+    "RegisteredDelivery":1,
+    "UseSAR":true,
+    "IdempotencyKey":"demo-key-1",
+    "CampaignID":"demo-campaign",
+    "Meta":{"country":"NP","operator":"NTC","message_type":"otp","campaign_id":"demo-campaign"}
+  }' | jq
+```
+
+Expected response:
+
+```json
+{
+  "MessageID": "msg-...",
+  "ProviderIDs": ["smsc-000001"],
+  "Parts": 1,
+  "State": "submitted",
+  "Idempotent": false
+}
+```
+
+The server then emits a DLR automatically and the message becomes `delivered`.
+
+### Enqueue asynchronously
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/messages/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "TenantID":"tenant-a",
+    "From":"BRAND",
+    "To":"9779841000000",
+    "Text":"Your OTP is 123456 queued",
+    "RegisteredDelivery":1,
+    "UseSAR":true,
+    "IdempotencyKey":"queued-key-1",
+    "CampaignID":"demo-campaign",
+    "Priority":5,
+    "Meta":{"country":"NP","operator":"NTC","message_type":"otp","campaign_id":"demo-campaign"}
+  }' | jq
+```
+
+Expected:
+
+```json
+{"queued":true}
+```
+
+### List messages
+
+```bash
+curl -s http://127.0.0.1:8080/v1/messages | jq
+```
+
+Expected shape:
+
+```json
+[
+  {
+    "ID":"msg-...",
+    "TenantID":"tenant-a",
+    "ProviderID":"local-smpp",
+    "ProviderMessageID":"smsc-000001",
+    "State":"delivered",
+    "Parts":[{"State":"delivered"}]
+  }
+]
+```
+
+### List DLRs
+
+```bash
+curl -s http://127.0.0.1:8080/v1/dlrs | jq
+```
+
+Expected shape:
+
+```json
+[
+  {
+    "ProviderID":"local-smpp",
+    "ProviderMessageID":"smsc-000001",
+    "State":"delivered",
+    "ErrorCode":"000"
+  }
+]
+```
+
+### Reports
+
+```bash
+curl -s http://127.0.0.1:8080/v1/reports/summary | jq
+curl -s 'http://127.0.0.1:8080/v1/reports/delivery?tenant_id=tenant-a&group_by=day' | jq
+curl -s 'http://127.0.0.1:8080/v1/reports/providers?provider_id=local-smpp' | jq
+curl -s 'http://127.0.0.1:8080/v1/reports/tenants?tenant_id=tenant-a' | jq
+curl -s 'http://127.0.0.1:8080/v1/reports/errors?tenant_id=tenant-a' | jq
+```
+
+Expected summary shape:
+
+```json
+{
+  "total": 2,
+  "by_state": {"delivered": 2},
+  "delivery_rate": 1,
+  "pending_dlr": 0
+}
+```
+
+### NDJSON export
+
+```bash
+curl -s http://127.0.0.1:8080/v1/reports/export.ndjson
+```
+
+Expected shape:
+
+```json
+{"kind":"message","tenant_id":"tenant-a","provider_id":"local-smpp","message_id":"msg-...","state":"delivered"}
+{"kind":"dlr","provider_id":"local-smpp","state":"delivered"}
+```
+
+The client logs this endpoint as an array of decoded NDJSON objects so the log body is not escaped and is not truncated.
+
+### Manager/admin endpoints
+
+```bash
+curl -s http://127.0.0.1:8080/v1/manager/tenants | jq
+curl -s http://127.0.0.1:8080/v1/manager/providers | jq
+curl -s http://127.0.0.1:8080/v1/manager/binds | jq
+curl -s http://127.0.0.1:8080/v1/manager/senders | jq
+curl -s http://127.0.0.1:8080/v1/manager/sessions | jq
+curl -s http://127.0.0.1:8080/v1/manager/audit | jq
+curl -s http://127.0.0.1:8080/v1/manager/queue | jq
+curl -s http://127.0.0.1:8080/v1/manager/dlq | jq
+curl -s http://127.0.0.1:8080/v1/contacts | jq
+curl -s http://127.0.0.1:8080/v1/optouts | jq
+curl -s http://127.0.0.1:8080/v1/ratelimits | jq
+curl -s http://127.0.0.1:8080/v1/alerts/open | jq
+```
+
+## Low-level SMPP client behavior
+
+Run:
+
+```bash
+go run ./examples/client --mode smpp
+```
+
+Expected flow:
+
+```text
+connect
+bind_transceiver
+submit_sm
+receive deliver_sm DLR
+send deliver_sm_resp
+query_sm
+data_sm
+submit_multi
+replace_sm
+cancel_sm
+unbind/close
+```
+
+Expected logs include:
+
+```json
+{"msg":"smpp.bound","state":"bound","window":8}
+{"msg":"smpp.submit_sm.ok","provider_message_id":"smsc-000001"}
+{"msg":"smpp.inbound_pdu","command":"deliver_sm","seq":...}
+{"msg":"smpp.deliver_sm","from":"BRAND","to":"9779841000000","text":"id:smsc-000001 ... stat:DELIVRD ..."}
+{"msg":"smpp.query_sm.ok","message_id":"smsc-000001","state":2,"error":0}
+{"msg":"smpp.data_sm.ok","provider_message_id":"data-000002"}
+{"msg":"smpp.submit_multi.ok","provider_message_id":"smsc-000003"}
+{"msg":"smpp.replace_sm.ok","message_id":"smsc-000001"}
+{"msg":"smpp.cancel_sm.ok","message_id":"smsc-000001"}
+```
+
+## Logging examples
+
+### Previous problem
+
+The previous client logged JSON bodies as strings:
+
+```text
+body="[{\"ID\":\"local-smpp\"}]"
+```
+
+It also read only the first 4096 bytes.
+
+### Current behavior
+
+The client now:
+
+- reads the complete response body
+- decodes JSON objects and arrays
+- decodes NDJSON into an array of objects
+- logs body as structured `slog.Any`
+- uses JSON logs by default
+
+Example:
+
+```json
+{
+  "msg":"http.get",
+  "url":"http://127.0.0.1:8080/v1/manager/providers",
+  "status":200,
+  "body":[
+    {
+      "ID":"local-smpp",
+      "Name":"local-smpp",
+      "SupportsQuery":true,
+      "SupportsCancel":true,
+      "SupportsReplace":true,
+      "SupportsDataSM":true,
+      "SupportsSubmitMulti":true
+    }
+  ]
+}
+```
+
+## SMPP protocol support note
+
+The implementation includes broad SMPP 3.3, 3.4, and 5.0 command support and validates version capabilities where implemented. It is suitable for local SMSC simulation, ESME client flows, async DLRs, routing, queueing, and carrier-integration development.
+
+Real-world SMPP interoperability still depends on each carrier's certification profile because providers often differ on:
+
+- bind mode
+- TON/NPI rules
+- DLR text format
+- TLV requirements
+- SAR vs UDH multipart behavior
+- throttling behavior
+- allowed source address policy
+- unsupported optional commands
+
+Use the included server/client example as the functional reference, then add provider-specific certification packs for live carrier rollout.
+
+## Developer commands
+
+```bash
+go fmt ./...
 go test ./...
+go run ./examples/server
+go run ./examples/client
 ```
 
-### Important deployment note
-
-The code includes complete adapter contracts and runnable local implementations. For live SMPP vendor certification, HLR/MNP/SIM-swap providers, Vault, Redis, PostgreSQL, NATS, Kafka, RabbitMQ and observability backends, production credentials/endpoints and vendor-specific certification documents are required at deployment time. Those commercial values cannot be truthfully embedded in an open archive, but the packages are ready to consume them through JSON/config/interfaces without changing core code.

@@ -51,6 +51,11 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS smpp_incidents (id VARCHAR(128) PRIMARY KEY, rule_id VARCHAR(128), severity VARCHAR(32), signal VARCHAR(128), status VARCHAR(32), payload TEXT, opened_at TIMESTAMP, closed_at TIMESTAMP)`,
 		`CREATE TABLE IF NOT EXISTS smpp_invoices (id VARCHAR(128) PRIMARY KEY, tenant_id VARCHAR(128), period_start TIMESTAMP, period_end TIMESTAMP, currency VARCHAR(8), subtotal_micros BIGINT, tax_micros BIGINT, total_micros BIGINT, payload TEXT, created_at TIMESTAMP)`,
 		`CREATE INDEX IF NOT EXISTS idx_smpp_invoices_tenant ON smpp_invoices(tenant_id, period_end)`,
+		`CREATE TABLE IF NOT EXISTS smpp_route_configs (id VARCHAR(64) PRIMARY KEY, version BIGINT, payload TEXT NOT NULL, created_at TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS smpp_route_audit_logs (id VARCHAR(128) PRIMARY KEY, version BIGINT, action VARCHAR(64), actor_id VARCHAR(128), payload TEXT, created_at TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS smpp_route_snapshots (id VARCHAR(128) PRIMARY KEY, message_id VARCHAR(128), tenant_id VARCHAR(128), provider_id VARCHAR(128), rule_id VARCHAR(128), route_version BIGINT, objective VARCHAR(64), strategy VARCHAR(64), score DOUBLE PRECISION, payload TEXT NOT NULL, created_at TIMESTAMP)`,
+		`CREATE INDEX IF NOT EXISTS idx_smpp_route_snapshots_tenant ON smpp_route_snapshots(tenant_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_smpp_route_snapshots_msg ON smpp_route_snapshots(message_id)`,
 	}
 	for _, st := range stmts {
 		if _, err := s.DB.ExecContext(ctx, st); err != nil {

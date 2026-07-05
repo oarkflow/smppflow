@@ -132,19 +132,50 @@ func (s *Service) client(ctx context.Context, p provider.Profile) (*session.Clie
 }
 
 func (s *Service) Send(ctx context.Context, req message.SubmitRequest) (message.SubmitResult, error) {
-	dec, err := s.cfg.Router.Route(ctx, req)
+	return s.sendWithMode(ctx, req, routing.PlanOptions{Mode: routing.RouteInitial})
+}
+
+func (s *Service) sendWithMode(ctx context.Context, req message.SubmitRequest, po routing.PlanOptions) (message.SubmitResult, error) {
+	started := time.Now()
+	dec, err := s.cfg.Router.RouteWithMode(ctx, req, po)
 	if err != nil {
 		return message.SubmitResult{}, err
 	}
+	reservationID := s.cfg.Router.ReservationID(dec)
 	prof := s.applyProviderCredential(ctx, req.TenantID, dec.Provider)
+	if req.Meta == nil {
+		req.Meta = map[string]string{}
+	}
+	req.ProviderID = prof.ID
+	req.Meta["system_id"] = prof.SystemID
+	req.Meta["bind_key"] = prof.ID + "|" + req.TenantID + "|" + prof.SystemID + "|" + string(prof.BindMode)
 	cli, err := s.client(ctx, prof)
 	if err != nil {
+		_ = s.cfg.Router.ReleaseReservation(ctx, reservationID)
+		s.cfg.Router.MarkRouteFailure(req, prof.ID, time.Since(started))
 		return message.SubmitResult{}, err
 	}
 	useSAR := req.UseSAR || prof.Multipart == provider.MultipartSAR
+	if s.cfg.Router != nil && cli != nil {
+		s.cfg.Router.UpdateSessionSnapshot(routing.SessionSnapshot{ProviderID: prof.ID, TenantID: req.TenantID, SystemID: prof.SystemID, BindMode: string(prof.BindMode), Healthy: true, WindowUsed: cli.Pending(), WindowSize: cli.WindowSize(), State: string(cli.State())})
+	}
 	mgr := message.NewManager(message.ManagerConfig{Client: cli, Store: s.cfg.Store, Bus: s.cfg.Bus, Hooks: s.cfg.Hooks, DefaultSourceTON: prof.SourceTON, DefaultSourceNPI: prof.SourceNPI, DefaultDestTON: prof.DestTON, DefaultDestNPI: prof.DestNPI, ProviderID: prof.ID, Taxonomy: message.NewErrorTaxonomy(), UseSAR: useSAR})
 	mgr.StartInbound(ctx)
-	return mgr.Submit(ctx, req)
+	res, err := mgr.Submit(ctx, req)
+	if err != nil {
+		_ = s.cfg.Router.ReleaseReservation(ctx, reservationID)
+		if s.cfg.Router != nil {
+			s.cfg.Router.CooldownProvider(prof.ID, s.cfg.RetryDelay)
+			s.cfg.Router.MarkRouteFailure(req, prof.ID, time.Since(started))
+		}
+		return res, err
+	}
+	if s.cfg.Router != nil {
+		_ = s.cfg.Router.CommitReservation(ctx, reservationID)
+		s.cfg.Router.MarkRouteSuccess(req, prof.ID, time.Since(started))
+		s.cfg.Router.AttachSnapshotMessageIDPersistent(ctx, dec.Snapshot.ID, res.MessageID)
+	}
+	return res, nil
 }
 
 func (s *Service) Enqueue(ctx context.Context, req message.SubmitRequest, priority int, runAt time.Time) error {
@@ -171,7 +202,17 @@ func (s *Service) worker(ctx context.Context, id int) {
 			_ = s.cfg.Queue.Nack(ctx, j, fmt.Errorf("unsupported job payload %T", j.Payload), 0)
 			continue
 		}
-		_, err = s.Send(ctx, req)
+		mode := routing.RouteInitial
+		if j.Attempts > 1 {
+			mode = routing.RouteRetry
+		}
+		po := routing.PlanOptions{Mode: mode}
+		if j.Meta != nil {
+			po.OriginalProviderID = j.Meta["original_provider_id"]
+			po.ExcludeProviderID = j.Meta["exclude_provider_id"]
+			po.AcceptedByProvider = j.Meta["accepted_by_provider"] == "true"
+		}
+		_, err = s.sendWithMode(ctx, req, po)
 		if err != nil {
 			_ = s.cfg.Queue.Nack(ctx, j, err, s.cfg.RetryDelay)
 			continue
