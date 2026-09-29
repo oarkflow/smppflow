@@ -10,6 +10,7 @@ import (
 	"github.com/oarkflow/smppflow/pkg/events"
 	"github.com/oarkflow/smppflow/pkg/hooks"
 	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/observability"
 	"github.com/oarkflow/smppflow/pkg/provider"
 	"github.com/oarkflow/smppflow/pkg/queue"
 	"github.com/oarkflow/smppflow/pkg/routing"
@@ -136,8 +137,12 @@ func (s *Service) Send(ctx context.Context, req message.SubmitRequest) (message.
 }
 
 func (s *Service) sendWithMode(ctx context.Context, req message.SubmitRequest, po routing.PlanOptions) (message.SubmitResult, error) {
+	ctx, span := observability.StartSpan(ctx, "submit")
+	span.SetAttr("tenant_id", req.TenantID)
+	defer span.End()
+
 	started := time.Now()
-	dec, err := s.cfg.Router.RouteWithMode(ctx, req, po)
+	dec, err := s.routeSpan(ctx, req, po)
 	if err != nil {
 		return message.SubmitResult{}, err
 	}
@@ -149,6 +154,7 @@ func (s *Service) sendWithMode(ctx context.Context, req message.SubmitRequest, p
 	req.ProviderID = prof.ID
 	req.Meta["system_id"] = prof.SystemID
 	req.Meta["bind_key"] = prof.ID + "|" + req.TenantID + "|" + prof.SystemID + "|" + string(prof.BindMode)
+	span.SetAttr("provider_id", prof.ID)
 	cli, err := s.client(ctx, prof)
 	if err != nil {
 		_ = s.cfg.Router.ReleaseReservation(ctx, reservationID)
@@ -161,8 +167,11 @@ func (s *Service) sendWithMode(ctx context.Context, req message.SubmitRequest, p
 	}
 	mgr := message.NewManager(message.ManagerConfig{Client: cli, Store: s.cfg.Store, Bus: s.cfg.Bus, Hooks: s.cfg.Hooks, DefaultSourceTON: prof.SourceTON, DefaultSourceNPI: prof.SourceNPI, DefaultDestTON: prof.DestTON, DefaultDestNPI: prof.DestNPI, ProviderID: prof.ID, Taxonomy: message.NewErrorTaxonomy(), UseSAR: useSAR})
 	mgr.StartInbound(ctx)
-	res, err := mgr.Submit(ctx, req)
+
+	deliverCtx, deliverSpan := observability.StartSpan(ctx, "deliver")
+	res, err := mgr.Submit(deliverCtx, req)
 	if err != nil {
+		deliverSpan.EndWithError(err)
 		_ = s.cfg.Router.ReleaseReservation(ctx, reservationID)
 		if s.cfg.Router != nil {
 			s.cfg.Router.CooldownProvider(prof.ID, s.cfg.RetryDelay)
@@ -170,12 +179,26 @@ func (s *Service) sendWithMode(ctx context.Context, req message.SubmitRequest, p
 		}
 		return res, err
 	}
+	deliverSpan.SetAttr("message_id", string(res.MessageID))
+	deliverSpan.End()
 	if s.cfg.Router != nil {
 		_ = s.cfg.Router.CommitReservation(ctx, reservationID)
 		s.cfg.Router.MarkRouteSuccess(req, prof.ID, time.Since(started))
 		s.cfg.Router.AttachSnapshotMessageIDPersistent(ctx, dec.Snapshot.ID, res.MessageID)
 	}
 	return res, nil
+}
+
+// routeSpan wraps the router call in its own child span so the routing
+// step is separately visible in logs from the overall submit span.
+func (s *Service) routeSpan(ctx context.Context, req message.SubmitRequest, po routing.PlanOptions) (routing.Decision, error) {
+	ctx, span := observability.StartSpan(ctx, "route")
+	defer span.End()
+	dec, err := s.cfg.Router.RouteWithMode(ctx, req, po)
+	if err != nil {
+		span.SetAttr("error", err.Error())
+	}
+	return dec, err
 }
 
 func (s *Service) Enqueue(ctx context.Context, req message.SubmitRequest, priority int, runAt time.Time) error {
