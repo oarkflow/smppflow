@@ -23,6 +23,7 @@ import (
 	"github.com/oarkflow/smppflow/pkg/hooks"
 	"github.com/oarkflow/smppflow/pkg/manager"
 	"github.com/oarkflow/smppflow/pkg/message"
+	"github.com/oarkflow/smppflow/pkg/observability"
 	"github.com/oarkflow/smppflow/pkg/optout"
 	"github.com/oarkflow/smppflow/pkg/protocol"
 	"github.com/oarkflow/smppflow/pkg/provider"
@@ -123,6 +124,13 @@ func main() {
 		return nil
 	})
 
+	metrics := observability.New()
+	metrics.SetHelp("smpp_submit_total", "Total SMPP submit-style PDUs handled, by kind and status")
+	metrics.SetHelp("smpp_bind_total", "Total SMPP bind attempts, by outcome")
+	metrics.SetHelp("smpp_pdu_duration_seconds", "SMPP PDU handling latency in seconds, by kind")
+	metrics.SetHelp("http_requests_total", "Total HTTP API requests, by path and status")
+	metrics.SetHelp("http_request_duration_seconds", "HTTP API request latency in seconds, by path")
+
 	var submitted atomic.Uint64
 	smppServer := smpp.New(smpp.Config{
 		Addr:     *smppAddr,
@@ -135,35 +143,47 @@ func main() {
 			logger.Info("smpp.bind", "system_id", req.SystemID, "mode", req.Mode, "version", req.InterfaceVersion)
 			if req.SystemID != *systemID || req.Password != *password {
 				logger.Warn("smpp.bind_rejected", "system_id", req.SystemID)
+				metrics.Inc("smpp_bind_total", map[string]string{"status": "rejected"}, 1)
 				return protocol.ESME_RINVPASWD
 			}
+			metrics.Inc("smpp_bind_total", map[string]string{"status": "ok"}, 1)
 			return protocol.ESME_ROK
 		},
 		Submit: func(ctx context.Context, req protocol.SubmitSMRequest) (string, protocol.CommandStatus) {
+			started := time.Now()
 			id := fmt.Sprintf("smsc-%06d", submitted.Add(1))
 			logger.Info("smpp.submit_sm", "message_id", id, "from", req.Source.Addr, "to", req.Destination.Addr, "coding", req.DataCoding, "registered_delivery", req.RegisteredDelivery, "bytes", len(req.ShortMessage))
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "submit_sm", "status": "ok"}, 1)
+			metrics.Observe("smpp_pdu_duration_seconds", map[string]string{"kind": "submit_sm"}, time.Since(started))
 			return id, protocol.ESME_ROK
 		},
 		DataSM: func(ctx context.Context, req protocol.SubmitSMRequest) (string, protocol.CommandStatus) {
+			started := time.Now()
 			id := fmt.Sprintf("data-%06d", submitted.Add(1))
 			logger.Info("smpp.data_sm", "message_id", id, "from", req.Source.Addr, "to", req.Destination.Addr)
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "data_sm", "status": "ok"}, 1)
+			metrics.Observe("smpp_pdu_duration_seconds", map[string]string{"kind": "data_sm"}, time.Since(started))
 			return id, protocol.ESME_ROK
 		},
 		Query: func(ctx context.Context, req protocol.QuerySMRequest) (protocol.QuerySMRespData, protocol.CommandStatus) {
 			logger.Info("smpp.query_sm", "message_id", req.MessageID, "source", req.Source.Addr)
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "query_sm", "status": "ok"}, 1)
 			return protocol.QuerySMRespData{MessageID: req.MessageID, MessageState: 2, ErrorCode: 0}, protocol.ESME_ROK
 		},
 		Cancel: func(ctx context.Context, req any) protocol.CommandStatus {
 			logger.Info("smpp.cancel_sm", "request", fmt.Sprintf("%+v", req))
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "cancel_sm", "status": "ok"}, 1)
 			return protocol.ESME_ROK
 		},
 		Replace: func(ctx context.Context, req any) protocol.CommandStatus {
 			logger.Info("smpp.replace_sm", "request", fmt.Sprintf("%+v", req))
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "replace_sm", "status": "ok"}, 1)
 			return protocol.ESME_ROK
 		},
 		Broadcast: func(ctx context.Context, req protocol.SubmitSMRequest) (string, protocol.CommandStatus) {
 			id := fmt.Sprintf("broadcast-%06d", submitted.Add(1))
 			logger.Info("smpp.broadcast_sm", "message_id", id, "from", req.Source.Addr)
+			metrics.Inc("smpp_submit_total", map[string]string{"kind": "broadcast_sm", "status": "ok"}, 1)
 			return id, protocol.ESME_ROK
 		},
 	})
@@ -262,7 +282,13 @@ func main() {
 	apiServer.Limiter = limiter
 	apiServer.Alerts = alertEngine
 
-	httpSrv := &http.Server{Addr: *httpAddr, Handler: requestLogger(logger, apiServer.Handler()), ReadHeaderTimeout: 5 * time.Second}
+	topMux := http.NewServeMux()
+	topMux.Handle("/", instrumentHTTP(metrics, requestLogger(logger, apiServer.Handler())))
+	topMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		_, _ = w.Write([]byte(metrics.Prometheus()))
+	})
+	httpSrv := &http.Server{Addr: *httpAddr, Handler: topMux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		logger.Info("http.server.start", "addr", *httpAddr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -278,6 +304,17 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	_ = smppServer.Close()
 	logger.Info("shutdown.complete")
+}
+
+func instrumentHTTP(metrics *observability.Metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		rw := &statusWriter{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rw, r)
+		labels := map[string]string{"path": r.URL.Path, "status": fmt.Sprintf("%d", rw.status)}
+		metrics.Inc("http_requests_total", labels, 1)
+		metrics.Observe("http_request_duration_seconds", map[string]string{"path": r.URL.Path}, time.Since(started))
+	})
 }
 
 func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
@@ -310,6 +347,7 @@ func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, pas
 	}
 	logger.Info("ready", "smpp", smppAddr, "http", httpAddr)
 	logger.Info("usage.health", "command", "curl -s "+httpURL+"/healthz")
+	logger.Info("usage.metrics", "command", "curl -s "+httpURL+"/metrics")
 	logger.Info("usage.send", "command", "curl -s -X POST "+httpURL+"/v1/messages/send -H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"RegisteredDelivery\":1,\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
 	logger.Info("usage.route_simulate", "command", "curl -s -X POST "+httpURL+"/v1/manager/route/simulate -H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
 	logger.Info("usage.client", "command", "go run ./examples/client --http "+httpURL+" --smpp "+smppURL+" --system-id "+systemID+" --password "+password)
