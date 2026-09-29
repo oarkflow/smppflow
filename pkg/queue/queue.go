@@ -19,6 +19,25 @@ const (
 	JobDeadLettered JobState = "dead_lettered"
 )
 
+// ErrNoJob is returned by a non-blocking Backend's Reserve when the queue is
+// currently empty (as opposed to *Memory's Reserve, which blocks until a job
+// is available or ctx is done). Callers driving a worker loop must treat
+// ErrNoJob as "poll again shortly", not as a fatal/shutdown condition.
+var ErrNoJob = errors.New("queue: no job available")
+
+// Backend is the contract pkg/service's worker loop needs from a job queue:
+// durable persistence is an implementation detail, not part of this
+// contract. *Memory and durablequeue.BrokerQueue both satisfy it, so
+// callers can swap between an in-process queue and a WAL-backed durable
+// one without changing worker code.
+type Backend interface {
+	Enqueue(ctx context.Context, job Job) error
+	Reserve(ctx context.Context) (*Job, error)
+	Ack(ctx context.Context, id string) error
+	Nack(ctx context.Context, job *Job, err error, delay time.Duration) error
+	Shutdown(ctx context.Context) error
+}
+
 type Job struct {
 	ID          string
 	Type        string
@@ -235,6 +254,11 @@ func (q *Memory) Snapshot() []Job {
 	return out
 }
 func (q *Memory) Close() { q.mu.Lock(); q.closed = true; q.cond.Broadcast(); q.mu.Unlock() }
+
+// Shutdown implements Backend by delegating to Close.
+func (q *Memory) Shutdown(ctx context.Context) error { q.Close(); return nil }
+
+var _ Backend = (*Memory)(nil)
 
 func (q *Memory) Pause()  { q.mu.Lock(); q.paused = true; q.mu.Unlock() }
 func (q *Memory) Resume() { q.mu.Lock(); q.paused = false; q.cond.Broadcast(); q.mu.Unlock() }

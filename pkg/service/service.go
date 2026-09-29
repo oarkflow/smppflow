@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -23,7 +25,7 @@ type ClientFactory func(context.Context, provider.Profile) (*session.Client, err
 type Config struct {
 	Router        *routing.Router
 	Store         message.Store
-	Queue         *queue.Memory
+	Queue         queue.Backend
 	Bus           events.Bus
 	Hooks         *hooks.Manager
 	ClientFactory ClientFactory
@@ -214,15 +216,52 @@ func (s *Service) StartWorkers(ctx context.Context, n int) {
 	}
 }
 
+// coerceSubmitRequest returns j.Payload as a message.SubmitRequest. Backends
+// that keep the live Go value across Enqueue/Reserve (e.g. *queue.Memory)
+// hit the direct type assertion. Backends that round-trip jobs through JSON
+// (BrokerQueue, RedisStreamsQueue, SQLQueue) decode an `any`-typed field back
+// as map[string]interface{}, losing the concrete type, so those fall back to
+// a JSON re-encode/decode into the expected struct.
+func coerceSubmitRequest(payload any) (message.SubmitRequest, error) {
+	if req, ok := payload.(message.SubmitRequest); ok {
+		return req, nil
+	}
+	var req message.SubmitRequest
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return req, err
+	}
+	if err := json.Unmarshal(b, &req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
 func (s *Service) worker(ctx context.Context, id int) {
+	const emptyPollInterval = 100 * time.Millisecond
+	const errorBackoff = time.Second
 	for {
 		j, err := s.cfg.Queue.Reserve(ctx)
 		if err != nil {
-			return
+			// A non-blocking Backend (e.g. BrokerQueue, RedisStreamsQueue) returns
+			// ErrNoJob when the queue is momentarily empty; that is not a shutdown
+			// signal, so poll again shortly instead of exiting the worker. *Memory's
+			// Reserve blocks internally and only returns an error on ctx
+			// cancellation, so this branch is a no-op for it in practice.
+			backoff := errorBackoff
+			if errors.Is(err, queue.ErrNoJob) {
+				backoff = emptyPollInterval
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			continue
 		}
-		req, ok := j.Payload.(message.SubmitRequest)
-		if !ok {
-			_ = s.cfg.Queue.Nack(ctx, j, fmt.Errorf("unsupported job payload %T", j.Payload), 0)
+		req, err := coerceSubmitRequest(j.Payload)
+		if err != nil {
+			_ = s.cfg.Queue.Nack(ctx, j, fmt.Errorf("unsupported job payload %T: %w", j.Payload, err), 0)
 			continue
 		}
 		mode := routing.RouteInitial
@@ -250,10 +289,10 @@ func (s *Service) Close(ctx context.Context) error {
 	for _, c := range s.clients {
 		_ = c.Close(ctx)
 	}
-	s.cfg.Queue.Close()
+	_ = s.cfg.Queue.Shutdown(ctx)
 	return nil
 }
 
-func (s *Service) Queue() *queue.Memory    { return s.cfg.Queue }
+func (s *Service) Queue() queue.Backend    { return s.cfg.Queue }
 func (s *Service) Router() *routing.Router { return s.cfg.Router }
 func (s *Service) Store() message.Store    { return s.cfg.Store }

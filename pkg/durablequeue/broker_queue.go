@@ -236,6 +236,11 @@ func (q *BrokerQueue) Close(ctx context.Context) error {
 	return q.b.Stop(ctx)
 }
 
+// Shutdown implements queue.Backend by delegating to Close.
+func (q *BrokerQueue) Shutdown(ctx context.Context) error { return q.Close(ctx) }
+
+var _ queue.Backend = (*BrokerQueue)(nil)
+
 func (q *BrokerQueue) Enqueue(ctx context.Context, j queue.Job) error {
 	if j.ID == "" {
 		j.ID = time.Now().Format("20060102150405.000000000")

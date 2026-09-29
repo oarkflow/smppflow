@@ -19,6 +19,7 @@ import (
 	httpapi "github.com/oarkflow/smppflow/pkg/api"
 	"github.com/oarkflow/smppflow/pkg/compliance"
 	"github.com/oarkflow/smppflow/pkg/contacts"
+	"github.com/oarkflow/smppflow/pkg/durablequeue"
 	"github.com/oarkflow/smppflow/pkg/events"
 	"github.com/oarkflow/smppflow/pkg/hooks"
 	"github.com/oarkflow/smppflow/pkg/manager"
@@ -91,6 +92,8 @@ func main() {
 		workers        = flag.Int("workers", 2, "async queue workers")
 		routeFile      = flag.String("routes", "./routes.demo.json", "file-backed route repository path")
 		logFormat      = flag.String("log-format", "json", "log format: json or text")
+		queueBackend   = flag.String("queue-backend", "memory", "job queue backend: memory or broker (oarkflow/broker WAL-backed durable queue)")
+		queueDataDir   = flag.String("queue-data-dir", "./.smppflow-queue", "data directory for --queue-backend=broker's WAL persistence")
 	)
 	flag.Parse()
 
@@ -196,7 +199,25 @@ func main() {
 	}()
 
 	msgStore := storage.NewMemory()
-	q := queue.NewMemory()
+	var (
+		q        queue.Backend
+		mgrQueue *queue.Memory // pkg/manager's queue-introspection endpoints (snapshot/DLQ/replay/cancel) only work with the in-memory queue
+	)
+	switch strings.ToLower(*queueBackend) {
+	case "broker":
+		bq, err := durablequeue.NewBrokerQueue(ctx, *queueDataDir, "sms.outbound")
+		if err != nil {
+			logger.Error("queue.broker.init_failed", "error", err)
+			os.Exit(1)
+		}
+		q = bq
+		logger.Info("queue.backend", "backend", "broker", "data_dir", *queueDataDir,
+			"note", "oarkflow/broker is pre-v1 per its own README; manager queue-introspection endpoints (snapshot/dlq/replay/cancel) are unavailable in this mode")
+	default:
+		mem := queue.NewMemory()
+		mgrQueue = mem
+		q = mem
+	}
 	accountStore := account.NewMemory()
 	router := routing.New()
 	router.SetRouteRepository(routing.NewFileRouteRepository(*routeFile))
@@ -260,7 +281,7 @@ func main() {
 	svc.StartWorkers(ctx, *workers)
 
 	mgrStore := manager.NewStore()
-	ops := manager.NewOperations(mgrStore, msgStore, router, q, session.NewManager(nil))
+	ops := manager.NewOperations(mgrStore, msgStore, router, mgrQueue, session.NewManager(nil))
 	_ = ops.UpsertTenant(ctx, "bootstrap", manager.Tenant{ID: *tenantID, Name: "Demo Tenant", Status: manager.TenantActive, TPS: 100, AllowedCountries: []string{"NP"}, AllowedSenderIDs: []string{"BRAND", "OTP", "PROMO"}})
 	_ = ops.SaveProvider(ctx, "bootstrap", prof)
 	_ = ops.SaveBind(ctx, "bootstrap", manager.BindAccount{TenantID: *tenantID, SystemID: *systemID, BindMode: string(protocol.BindModeTransceiver), MaxBinds: 2, TPS: 100, Enabled: true})
@@ -297,12 +318,13 @@ func main() {
 		}
 	}()
 
-	printUsage(logger, *httpAddr, *smppAddr, *tenantID, *systemID, *password)
+	printUsage(logger, *httpAddr, *smppAddr, *tenantID, *systemID, *password, *queueBackend)
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	_ = smppServer.Close()
+	_ = svc.Close(shutdownCtx)
 	logger.Info("shutdown.complete")
 }
 
@@ -336,7 +358,7 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, password string) {
+func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, password, queueBackend string) {
 	httpURL := "http://127.0.0.1" + httpAddr
 	if strings.HasPrefix(httpAddr, "127.0.0.1") || strings.HasPrefix(httpAddr, "localhost") {
 		httpURL = "http://" + httpAddr
@@ -345,7 +367,8 @@ func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, pas
 	if strings.HasPrefix(smppAddr, "127.0.0.1") || strings.HasPrefix(smppAddr, "localhost") {
 		smppURL = smppAddr
 	}
-	logger.Info("ready", "smpp", smppAddr, "http", httpAddr)
+	logger.Info("ready", "smpp", smppAddr, "http", httpAddr, "queue_backend", queueBackend)
+	logger.Info("usage.queue_backend", "note", "pass --queue-backend=broker --queue-data-dir=./.smppflow-queue for a WAL-persistent durable queue instead of the default in-memory one")
 	logger.Info("usage.health", "command", "curl -s "+httpURL+"/healthz")
 	logger.Info("usage.metrics", "command", "curl -s "+httpURL+"/metrics")
 	logger.Info("usage.send", "command", "curl -s -X POST "+httpURL+"/v1/messages/send -H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"RegisteredDelivery\":1,\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")

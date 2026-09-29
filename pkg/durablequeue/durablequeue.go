@@ -182,8 +182,11 @@ func (q SQLQueue) Nack(ctx context.Context, j *queue.Job, e error, delay time.Du
 }
 
 // ErrNoJob is returned by RedisStreamsQueue.Reserve when XREADGROUP's BLOCK
-// window elapses with no new stream entries.
-var ErrNoJob = errors.New("durablequeue: no job available")
+// window elapses with no new stream entries, and by BrokerQueue.Reserve when
+// nothing is currently leasable. It is an alias of queue.ErrNoJob so worker
+// loops built against pkg/queue.Backend can check for it with a single
+// errors.Is regardless of which backend is in use.
+var ErrNoJob = queue.ErrNoJob
 
 // RedisStreamsQueue is a Backend built on Redis Streams consumer groups,
 // using a small hand-rolled RESP2 client (no external Redis driver). It is
