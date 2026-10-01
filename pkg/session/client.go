@@ -31,8 +31,9 @@ type Config struct {
 }
 type Client struct {
 	cfg       Config
-	conn      net.Conn
 	mu        sync.Mutex
+	conn      net.Conn
+	closeOnce sync.Once
 	state     lifecycle.ConnectionState
 	seq       atomic.Uint32
 	pendingMu sync.Mutex
@@ -40,6 +41,25 @@ type Client struct {
 	inbound   chan protocol.PDU
 	closed    chan struct{}
 }
+
+// setConn stores the active connection. conn is guarded by mu because Connect,
+// SendPDU, readLoop and Close all touch it from different goroutines.
+func (c *Client) setConn(conn net.Conn) {
+	c.mu.Lock()
+	c.conn = conn
+	c.mu.Unlock()
+}
+
+// currentConn returns the active connection, or nil once the client is closed.
+func (c *Client) currentConn() net.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn
+}
+
+// markClosed closes the closed channel exactly once, regardless of how many
+// goroutines observe the connection dropping.
+func (c *Client) markClosed() { c.closeOnce.Do(func() { close(c.closed) }) }
 
 func NewClient(cfg Config) *Client {
 	if cfg.EnquireInterval == 0 {
@@ -85,7 +105,7 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.setState(lifecycle.ConnFailed)
 		return err
 	}
-	c.conn = conn
+	c.setConn(conn)
 	c.setState(lifecycle.ConnConnected)
 	_ = c.cfg.Hooks.Run(ctx, hooks.AfterConnect, c)
 	_ = c.cfg.Bus.Publish(ctx, events.Event{Topic: events.ConnectionOpened, Data: c.cfg.Addr})
@@ -111,8 +131,14 @@ func (c *Client) Bind(ctx context.Context) error {
 	return nil
 }
 func (c *Client) SendPDU(ctx context.Context, p protocol.PDU) (protocol.PDU, error) {
-	if c.conn == nil {
+	conn := c.currentConn()
+	if conn == nil {
 		return protocol.PDU{}, errors.New("not connected")
+	}
+	select {
+	case <-c.closed:
+		return protocol.PDU{}, errors.New("client closed")
+	default:
 	}
 	if p.SequenceNumber == 0 {
 		p.SequenceNumber = c.NextSeq()
@@ -130,7 +156,7 @@ func (c *Client) SendPDU(ctx context.Context, p protocol.PDU) (protocol.PDU, err
 	}
 	_ = c.cfg.Hooks.Run(ctx, hooks.BeforePDUSend, p)
 	c.mu.Lock()
-	err := codec.WritePDU(c.conn, p)
+	err := codec.WritePDU(conn, p)
 	c.mu.Unlock()
 	if err != nil {
 		return protocol.PDU{}, err
@@ -152,21 +178,38 @@ func (c *Client) SendPDU(ctx context.Context, p protocol.PDU) (protocol.PDU, err
 	}
 }
 func (c *Client) Inbound() <-chan protocol.PDU { return c.inbound }
+
+// writePDU sends a PDU on the current connection under the write lock.
+func (c *Client) writePDU(p protocol.PDU) error {
+	conn := c.currentConn()
+	if conn == nil {
+		return errors.New("not connected")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return codec.WritePDU(conn, p)
+}
+
 func (c *Client) readLoop() {
+	conn := c.currentConn()
+	if conn == nil {
+		return
+	}
 	for {
-		p, err := codec.ReadPDU(c.conn)
+		p, err := codec.ReadPDU(conn)
 		if err != nil {
-			close(c.closed)
+			c.markClosed()
 			_ = c.cfg.Bus.Publish(context.Background(), events.Event{Topic: events.ConnectionClosed, Data: err.Error()})
 			return
 		}
 		_ = c.cfg.Bus.Publish(context.Background(), events.Event{Topic: events.PduReceived, Data: p.CommandID.String()})
 		if p.CommandID == protocol.EnquireLink {
-			_ = codec.WritePDU(c.conn, protocol.BuildEnquireLinkResp(p.SequenceNumber))
+			_ = c.writePDU(protocol.BuildEnquireLinkResp(p.SequenceNumber))
 			continue
 		}
 		if p.CommandID == protocol.Unbind {
-			_ = codec.WritePDU(c.conn, protocol.BuildUnbindResp(p.SequenceNumber))
+			_ = c.writePDU(protocol.BuildUnbindResp(p.SequenceNumber))
+			c.markClosed()
 			return
 		}
 		if p.IsResponse() {
@@ -198,14 +241,25 @@ func (c *Client) heartbeat() {
 		}
 	}
 }
+
+// Close unbinds and tears the connection down. It is safe to call repeatedly and
+// from multiple goroutines; only the first call does any work.
 func (c *Client) Close(ctx context.Context) error {
-	if c.conn == nil {
+	conn := c.currentConn()
+	if conn == nil {
 		return nil
 	}
+	select {
+	case <-c.closed:
+		return nil
+	default:
+	}
 	c.setState(lifecycle.ConnUnbinding)
+	// Best-effort unbind; the peer may already be gone.
 	_, _ = c.SendPDU(ctx, protocol.BuildUnbind(c.NextSeq()))
 	c.setState(lifecycle.ConnClosed)
-	return c.conn.Close()
+	c.markClosed()
+	return conn.Close()
 }
 func (c *Client) SubmitSM(ctx context.Context, req protocol.SubmitSMRequest) (protocol.SubmitSMRespData, error) {
 	resp, err := c.SendPDU(ctx, protocol.BuildSubmitSM(c.NextSeq(), req))

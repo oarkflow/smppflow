@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -28,14 +29,23 @@ type IPPolicy struct {
 	deny      []*net.IPNet
 }
 
+// Compile parses AllowCIDR and DenyCIDR into compiled networks.
+//
+// Every entry must be a valid IP or CIDR; invalid entries are rejected rather
+// than dropped. Silently discarding a malformed allowlist entry would leave
+// p.allow empty, and an empty allowlist permits every address, so a typo would
+// fail open instead of closed.
 func (p *IPPolicy) Compile() error {
-	parse := func(xs []string) ([]*net.IPNet, error) {
+	parse := func(name string, xs []string) ([]*net.IPNet, error) {
 		out := []*net.IPNet{}
 		for _, x := range xs {
+			if strings.TrimSpace(x) == "" {
+				continue
+			}
 			if !strings.Contains(x, "/") {
 				ip := net.ParseIP(x)
 				if ip == nil {
-					continue
+					return nil, fmt.Errorf("security: invalid %s entry %q: not an IP address or CIDR", name, x)
 				}
 				if ip.To4() != nil {
 					x += "/32"
@@ -45,20 +55,26 @@ func (p *IPPolicy) Compile() error {
 			}
 			_, n, err := net.ParseCIDR(x)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("security: invalid %s entry %q: %w", name, x, err)
 			}
 			out = append(out, n)
 		}
 		return out, nil
 	}
 	var err error
-	p.allow, err = parse(p.AllowCIDR)
+	p.allow, err = parse("AllowCIDR", p.AllowCIDR)
 	if err != nil {
 		return err
 	}
-	p.deny, err = parse(p.DenyCIDR)
+	p.deny, err = parse("DenyCIDR", p.DenyCIDR)
 	return err
 }
+
+// Allowed reports whether remote (either "ip" or "ip:port") is permitted.
+//
+// Deny entries always win. When AllowCIDR is empty every address not denied is
+// allowed; populate AllowCIDR to run in allowlist mode. Compile must be called
+// before use.
 func (p *IPPolicy) Allowed(remote string) bool {
 	host, _, err := net.SplitHostPort(remote)
 	if err != nil {

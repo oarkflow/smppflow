@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
 )
 
 type Result struct {

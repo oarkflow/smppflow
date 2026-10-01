@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,7 +31,9 @@ import (
 	"github.com/oarkflow/smppflow/pkg/provider"
 	"github.com/oarkflow/smppflow/pkg/queue"
 	"github.com/oarkflow/smppflow/pkg/ratelimit"
+	"github.com/oarkflow/smppflow/pkg/rbac"
 	"github.com/oarkflow/smppflow/pkg/routing"
+	"github.com/oarkflow/smppflow/pkg/security"
 	smpp "github.com/oarkflow/smppflow/pkg/server"
 	"github.com/oarkflow/smppflow/pkg/service"
 	"github.com/oarkflow/smppflow/pkg/session"
@@ -84,6 +87,8 @@ func (b memoryBalance) CanReserve(ctx context.Context, tenantID string, rate rou
 func main() {
 	var (
 		smppAddr       = flag.String("smpp", ":2775", "SMPP listener address")
+		smppTLSCert    = flag.String("smpp-tls-cert", "", "TLS certificate file for the SMPP listener (enables SMPPS)")
+		smppTLSKey     = flag.String("smpp-tls-key", "", "TLS private key file for the SMPP listener")
 		httpAddr       = flag.String("http", ":8080", "HTTP API listener address")
 		publicSMPPAddr = flag.String("provider-addr", "127.0.0.1:2775", "address used by the HTTP service to connect to the local SMPP server")
 		systemID       = flag.String("system-id", "smppclient", "accepted SMPP system_id")
@@ -94,8 +99,32 @@ func main() {
 		logFormat      = flag.String("log-format", "json", "log format: json or text")
 		queueBackend   = flag.String("queue-backend", "memory", "job queue backend: memory or broker (oarkflow/broker WAL-backed durable queue)")
 		queueDataDir   = flag.String("queue-data-dir", "./.smppflow-queue", "data directory for --queue-backend=broker's WAL persistence")
+		tlsCert        = flag.String("tls-cert", "", "TLS certificate file for the HTTP API listener (enables HTTPS)")
+		tlsKey         = flag.String("tls-key", "", "TLS private key file for the HTTP API listener")
+		authMode       = flag.String("auth", "api-key", "HTTP API auth mode: api-key (default) or open (development only)")
+		authRateLimit  = flag.Int("auth-rate-limit", 0, "max HTTP API requests per minute per API key (0 disables)")
+		healthcheck    = flag.Bool("healthcheck", false, "probe --http's /healthz and exit 0 when healthy, 1 otherwise (for container healthchecks)")
 	)
 	flag.Parse()
+
+	if *healthcheck {
+		os.Exit(runHealthcheck(*httpAddr, *tlsCert != "" && *tlsKey != ""))
+	}
+	var smppTLS *tls.Config
+	if *smppTLSCert != "" || *smppTLSKey != "" {
+		if *smppTLSCert == "" || *smppTLSKey == "" {
+			logger := newLogger(*logFormat)
+			logger.Error("smpp.tls.incomplete", "note", "both --smpp-tls-cert and --smpp-tls-key are required")
+			os.Exit(1)
+		}
+		cert, err := tls.LoadX509KeyPair(*smppTLSCert, *smppTLSKey)
+		if err != nil {
+			logger := newLogger(*logFormat)
+			logger.Error("smpp.tls.load_failed", "error", err)
+			os.Exit(1)
+		}
+		smppTLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	}
 
 	logger := newLogger(*logFormat)
 	slog.SetDefault(logger)
@@ -137,6 +166,7 @@ func main() {
 	var submitted atomic.Uint64
 	smppServer := smpp.New(smpp.Config{
 		Addr:     *smppAddr,
+		TLS:      smppTLS,
 		SystemID: "demo-smsc",
 		Version:  protocol.Version34,
 		Bus:      bus,
@@ -273,9 +303,14 @@ func main() {
 	_ = accountStore.SaveProviderCredential(ctx, cred)
 	demoUser := account.User{ID: "demo-admin", TenantID: *tenantID, Username: "demo", DisplayName: "Demo Admin", Roles: []string{"admin", "support"}, Enabled: true}
 	_ = accountStore.SaveUser(ctx, demoUser)
-	apiKey, apiSecret, _ := account.NewAPIKey(*tenantID, demoUser.ID, "demo")
-	_ = accountStore.SaveAPIKey(ctx, apiKey)
-	logger.Info("demo.api_key", "secret", apiSecret, "note", "demo only; do not log secrets in production")
+
+	keyStore := rbac.NewKeyStore()
+	apiKey, apiSecret, err := keyStore.Create(*tenantID, "demo", []string{"*"}, 0)
+	if err != nil {
+		logger.Error("api_key.create_failed", "error", err)
+		os.Exit(1)
+	}
+	_ = accountStore.SaveAPIKey(ctx, account.APIKey{ID: apiKey.ID, TenantID: apiKey.TenantID, UserID: demoUser.ID, Name: apiKey.Name, Prefix: apiSecret[:10], SecretHash: security.HashSecret(apiSecret), Enabled: true, CreatedAt: apiKey.CreatedAt, UpdatedAt: apiKey.CreatedAt})
 
 	svc := service.New(service.Config{Router: router, Store: msgStore, Queue: q, Bus: bus, Hooks: hookMgr, AccountStore: accountStore, RetryDelay: time.Second})
 	svc.StartWorkers(ctx, *workers)
@@ -302,6 +337,17 @@ func main() {
 	apiServer.Contacts = contactStore
 	apiServer.Limiter = limiter
 	apiServer.Alerts = alertEngine
+	apiServer.Keys = keyStore
+	if strings.EqualFold(*authMode, "api-key") {
+		apiServer.Auth = &httpapi.AuthConfig{
+			Keys:                 httpapi.KeyStoreAuth(keyStore),
+			Policy:               httpapi.PolicyAuthorize(rbac.NewPolicy()),
+			MaxRequestsPerMinute: *authRateLimit,
+		}
+		logger.Info("http.auth", "mode", "api-key", "note", "all /v1 routes require Authorization: Bearer <key>; /healthz and /metrics are open")
+	} else {
+		logger.Warn("http.auth", "mode", "open", "note", "HTTP API is UNAUTHENTICATED; never use --auth=open outside local development")
+	}
 
 	topMux := http.NewServeMux()
 	topMux.Handle("/", instrumentHTTP(metrics, requestLogger(logger, apiServer.Handler())))
@@ -309,16 +355,29 @@ func main() {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(metrics.Prometheus()))
 	})
-	httpSrv := &http.Server{Addr: *httpAddr, Handler: topMux, ReadHeaderTimeout: 5 * time.Second}
+	httpSrv := &http.Server{Addr: *httpAddr, Handler: topMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	scheme := "http"
+	if *tlsCert != "" && *tlsKey != "" {
+		scheme = "https"
+	} else if *tlsCert != "" || *tlsKey != "" {
+		logger.Error("http.tls.incomplete", "note", "both --tls-cert and --tls-key are required")
+		os.Exit(1)
+	}
 	go func() {
-		logger.Info("http.server.start", "addr", *httpAddr)
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info("http.server.start", "addr", *httpAddr, "scheme", scheme)
+		var err error
+		if scheme == "https" {
+			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("http.server.error", "error", err)
 			stop()
 		}
 	}()
 
-	printUsage(logger, *httpAddr, *smppAddr, *tenantID, *systemID, *password, *queueBackend)
+	printUsage(logger, *httpAddr, *smppAddr, *tenantID, *systemID, *password, *queueBackend, scheme, apiSecret, strings.EqualFold(*authMode, "api-key"))
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -358,20 +417,63 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, password, queueBackend string) {
-	httpURL := "http://127.0.0.1" + httpAddr
+// runHealthcheck probes the HTTP API's /healthz endpoint and returns a process
+// exit code, so container runtimes can health-check a distroless image that has
+// no shell, curl or wget.
+func runHealthcheck(httpAddr string, useTLS bool) int {
+	host := httpAddr
+	if strings.HasPrefix(host, ":") {
+		host = "127.0.0.1" + host
+	}
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	url := scheme + "://" + host + "/healthz"
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+		// The probe runs inside the container against its own listener, which
+		// commonly presents a self-signed or hostname-mismatched certificate.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // local loopback probe only
+	}}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck: ", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck: status ", resp.StatusCode)
+		return 1
+	}
+	return 0
+}
+
+func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, password, queueBackend, scheme, apiSecret string, authEnabled bool) {
+	httpURL := scheme + "://127.0.0.1" + httpAddr
 	if strings.HasPrefix(httpAddr, "127.0.0.1") || strings.HasPrefix(httpAddr, "localhost") {
-		httpURL = "http://" + httpAddr
+		httpURL = scheme + "://" + httpAddr
 	}
 	smppURL := "127.0.0.1" + smppAddr
 	if strings.HasPrefix(smppAddr, "127.0.0.1") || strings.HasPrefix(smppAddr, "localhost") {
 		smppURL = smppAddr
 	}
-	logger.Info("ready", "smpp", smppAddr, "http", httpAddr, "queue_backend", queueBackend)
+	authHeader := ""
+	if authEnabled {
+		// Printed to stdout rather than the structured logger so the demo
+		// credential is not shipped to whatever sink logs are written to.
+		fmt.Printf("\nDEMO API KEY (shown once, not logged): %s\n", apiSecret)
+		fmt.Printf("Add to requests: -H 'Authorization: Bearer %s'\n\n", apiSecret)
+		authHeader = "-H 'Authorization: Bearer <DEMO API KEY>' "
+	}
+	logger.Info("ready", "smpp", smppAddr, "http", httpAddr, "queue_backend", queueBackend, "scheme", scheme, "auth", map[bool]string{true: "api-key", false: "open"}[authEnabled])
+	if !authEnabled {
+		logger.Warn("usage.auth", "note", "HTTP API is unauthenticated; start with --auth=api-key (the default) before exposing this listener")
+	}
 	logger.Info("usage.queue_backend", "note", "pass --queue-backend=broker --queue-data-dir=./.smppflow-queue for a WAL-persistent durable queue instead of the default in-memory one")
-	logger.Info("usage.health", "command", "curl -s "+httpURL+"/healthz")
-	logger.Info("usage.metrics", "command", "curl -s "+httpURL+"/metrics")
-	logger.Info("usage.send", "command", "curl -s -X POST "+httpURL+"/v1/messages/send -H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"RegisteredDelivery\":1,\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
-	logger.Info("usage.route_simulate", "command", "curl -s -X POST "+httpURL+"/v1/manager/route/simulate -H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
+	logger.Info("usage.health", "command", "curl -sk "+httpURL+"/healthz")
+	logger.Info("usage.metrics", "command", "curl -sk "+httpURL+"/metrics")
+	logger.Info("usage.send", "command", "curl -sk -X POST "+httpURL+"/v1/messages/send "+authHeader+"-H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"RegisteredDelivery\":1,\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
+	logger.Info("usage.route_simulate", "command", "curl -sk -X POST "+httpURL+"/v1/manager/route/simulate "+authHeader+"-H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")
+	logger.Info("usage.tls", "note", "pass --tls-cert and --tls-key to serve the HTTP API over HTTPS")
 	logger.Info("usage.client", "command", "go run ./examples/client --http "+httpURL+" --smpp "+smppURL+" --system-id "+systemID+" --password "+password)
 }

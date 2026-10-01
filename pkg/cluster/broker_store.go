@@ -74,11 +74,11 @@ const (
 // by every replica's Apply instead of time.Now(), so all replicas compute
 // byte-identical results from the same log entry.
 type brokerOp struct {
-	Kind  brokerOpKind `json:"kind"`
-	Node  *Node        `json:"node,omitempty"`
-	Lease *BindLease   `json:"lease,omitempty"`
+	Kind  brokerOpKind  `json:"kind"`
+	Node  *Node         `json:"node,omitempty"`
+	Lease *BindLease    `json:"lease,omitempty"`
 	TTL   time.Duration `json:"ttl,omitempty"`
-	Now   time.Time    `json:"now"`
+	Now   time.Time     `json:"now"`
 }
 
 // brokerOpOutcome is what applying a brokerOp produced, stashed by index so

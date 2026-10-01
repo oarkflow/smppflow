@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  # smppflow's go.mod has `replace github.com/oarkflow/broker => ../broker`,
+  # so the broker must be checked out as a sibling of the smppflow checkout.
+  # When the broker is private, give this workflow a token that can read it.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: smppflow
+          persist-credentials: false
+      - name: Checkout sibling broker dependency
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.BROKER_REPOSITORY || 'oarkflow/broker' }}
+          path: broker
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache-dependency-path: |
+            smppflow/go.sum
+            broker/go.sum
+      - name: Reject non-portable module replacements
+        working-directory: smppflow
+        run: |
+          if grep -R -nE '^[[:space:]]*replace .*=>[[:space:]]*(/|[A-Za-z]:\\)' --include=go.mod .; then
+            echo 'absolute replace directives are not portable' >&2
+            exit 1
+          fi
+      - name: Check formatting
+        working-directory: smppflow
+        run: test -z "$(gofmt -l -- $(git ls-files '*.go'))"
+      - name: Vet
+        working-directory: smppflow
+        run: bash scripts/ci.sh vet
+      - name: Test
+        working-directory: smppflow
+        run: bash scripts/ci.sh test
+      - name: Test with race detector
+        working-directory: smppflow
+        run: bash scripts/ci.sh race
+
+  vulnerability-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: smppflow
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.BROKER_REPOSITORY || 'oarkflow/broker' }}
+          path: broker
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache-dependency-path: |
+            smppflow/go.sum
+            broker/go.sum
+      - id: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ${{ env.GO_VERSION }}
+          work-dir: smppflow
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: smppflow
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.BROKER_REPOSITORY || 'oarkflow/broker' }}
+          path: broker
+          persist-credentials: false
+      - name: Build container image
+        run: |
+          docker build \
+            --file smppflow/Dockerfile \
+            --tag smppflow:ci \
+            .

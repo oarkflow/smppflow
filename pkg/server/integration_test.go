@@ -18,7 +18,11 @@ func TestClientServerSubmit(t *testing.T) {
 	srv := server.New(server.Config{Addr: "127.0.0.1:0", SystemID: "smsc", AutoDLR: true})
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe(ctx) }()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-srv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not bind in time")
+	}
 	cli := session.NewClient(session.Config{Addr: srv.Addr(), Bind: protocol.BindRequest{Mode: protocol.BindModeTransceiver, SystemID: "x", Password: "y", InterfaceVersion: protocol.Version34}, EnquireInterval: time.Hour})
 	if err := cli.Connect(ctx); err != nil {
 		t.Fatal(err)

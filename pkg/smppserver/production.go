@@ -127,6 +127,9 @@ func New(cfg Config) *Server {
 	}
 	sc := cfg.Inner
 	sc.Addr = cfg.Addr
+	if cfg.TLS != nil {
+		sc.TLS = cfg.TLS
+	}
 	sc.SystemID = cfg.SystemID
 	sc.Version = cfg.Version
 	sc.Bus = cfg.Bus
@@ -161,26 +164,11 @@ func New(cfg Config) *Server {
 	return &Server{cfg: cfg, inner: server.New(sc)}
 }
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	if s.cfg.TLS == nil {
-		return s.inner.ListenAndServe(ctx)
-	}
-	ln, err := tls.Listen("tcp", s.cfg.Addr, s.cfg.TLS)
-	if err != nil {
-		return err
-	}
-	defer ln.Close()
-	go func() { <-ctx.Done(); _ = ln.Close() }()
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
-		}
-		_ = conn.Close()
-		return errors.New("TLS production wrapper accepted connection; use server.Config TLS in future extension")
-	}
+	return s.inner.ListenAndServe(ctx)
 }
-func (s *Server) Addr() string { return s.inner.Addr() }
-func (s *Server) Close() error { return s.inner.Close() }
+func (s *Server) Addr() string           { return s.inner.Addr() }
+func (s *Server) Ready() <-chan struct{} { return s.inner.Ready() }
+func (s *Server) Close() error           { return s.inner.Close() }
 func RemoteIP(conn net.Conn) string {
 	h, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {

@@ -37,6 +37,10 @@ type Service struct {
 	cfg     Config
 	mu      sync.Mutex
 	clients map[string]*session.Client
+
+	workersMu sync.Mutex
+	workersWG sync.WaitGroup
+	workersCf context.CancelFunc
 }
 
 func New(cfg Config) *Service {
@@ -207,12 +211,27 @@ func (s *Service) Enqueue(ctx context.Context, req message.SubmitRequest, priori
 	return s.cfg.Queue.Enqueue(ctx, queue.Job{Type: "send_sms", Payload: req, Priority: priority, RunAt: runAt, MaxAttempts: 3})
 }
 
+// StartWorkers launches n queue workers. They run until Close is called or ctx
+// is cancelled, whichever happens first. Calling StartWorkers again after Close
+// starts a fresh worker set.
 func (s *Service) StartWorkers(ctx context.Context, n int) {
 	if n <= 0 {
 		n = 1
 	}
+	s.workersMu.Lock()
+	if s.workersCf != nil {
+		s.workersCf()
+		s.workersWG.Wait()
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	s.workersCf = cancel
+	s.workersMu.Unlock()
 	for i := 0; i < n; i++ {
-		go s.worker(ctx, i)
+		s.workersWG.Add(1)
+		go func(id int) {
+			defer s.workersWG.Done()
+			s.worker(wctx, id)
+		}(i)
 	}
 }
 
@@ -283,14 +302,24 @@ func (s *Service) worker(ctx context.Context, id int) {
 	}
 }
 
+// Close stops the workers and shuts the queue down. It is safe to call more than
+// once and blocks until workers have exited.
 func (s *Service) Close(ctx context.Context) error {
+	s.workersMu.Lock()
+	if s.workersCf != nil {
+		s.workersCf()
+		s.workersCf = nil
+	}
+	s.workersMu.Unlock()
+	s.workersWG.Wait()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.clients {
 		_ = c.Close(ctx)
 	}
-	_ = s.cfg.Queue.Shutdown(ctx)
-	return nil
+	s.clients = map[string]*session.Client{}
+	return s.cfg.Queue.Shutdown(ctx)
 }
 
 func (s *Service) Queue() queue.Backend    { return s.cfg.Queue }

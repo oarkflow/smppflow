@@ -1,0 +1,14 @@
+# Ignore everything except what the image actually needs. The build context is
+# the parent directory of smppflow and broker, so these patterns apply to both.
+.git
+.github
+**/.DS_Store
+**/node_modules
+**/*.md
+**/*_test.go
+**/testdata
+**/.smppflow-queue
+**/artifacts
+**/benchmarks
+**/scripts
+**/deploy

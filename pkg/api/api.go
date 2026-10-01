@@ -12,6 +12,7 @@ import (
 	"github.com/oarkflow/smppflow/pkg/message"
 	"github.com/oarkflow/smppflow/pkg/optout"
 	"github.com/oarkflow/smppflow/pkg/ratelimit"
+	"github.com/oarkflow/smppflow/pkg/rbac"
 	"github.com/oarkflow/smppflow/pkg/reports"
 	"github.com/oarkflow/smppflow/pkg/service"
 )
@@ -24,7 +25,15 @@ type Server struct {
 	Contacts *contacts.Store
 	Limiter  *ratelimit.Limiter
 	Alerts   *alerts.Engine
-	mux      *http.ServeMux
+	// Auth, when configured with a non-nil Keys, enforces API key
+	// authentication and optional authorization on every route except those
+	// listed in Auth.Public. Leaving Auth nil keeps the API open, which is only
+	// suitable for local development.
+	Auth *AuthConfig
+	// Keys optionally exposes API key management endpoints under
+	// /v1/manager/api-keys. It is only mounted when non-nil.
+	Keys *rbac.KeyStore
+	mux  *http.ServeMux
 }
 
 func New(svc *service.Service, st message.Store) *Server {
@@ -32,7 +41,15 @@ func New(svc *service.Service, st message.Store) *Server {
 	a.routes()
 	return a
 }
-func (a *Server) Handler() http.Handler { return a.mux }
+
+// Handler returns the HTTP handler with authentication, authorization and rate
+// limiting applied when Auth is configured.
+func (a *Server) Handler() http.Handler { return a.middleware(a.mux) }
+
+// Wrap applies the same authentication, authorization and rate limiting used by
+// Handler to an arbitrary handler. Use it to protect additional endpoints
+// mounted alongside the API, such as a custom admin or metrics handler.
+func (a *Server) Wrap(next http.Handler) http.Handler { return a.middleware(next) }
 func (a *Server) routes() {
 	a.mux.HandleFunc("/v1/messages/send", a.send)
 	a.mux.HandleFunc("/v1/messages/enqueue", a.enqueue)
@@ -60,6 +77,7 @@ func (a *Server) routes() {
 	a.mux.HandleFunc("/v1/contacts", a.contacts)
 	a.mux.HandleFunc("/v1/ratelimits", a.rateLimits)
 	a.mux.HandleFunc("/v1/alerts/open", a.openAlerts)
+	a.mux.HandleFunc("/v1/manager/api-keys", a.apiKeys)
 	a.mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 }
 func (a *Server) send(w http.ResponseWriter, r *http.Request) {
@@ -455,4 +473,65 @@ func (a *Server) openAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a.Alerts.Open())
+}
+
+// apiKeys manages API keys. The raw secret is returned exactly once at creation
+// and is never retrievable afterwards; only the hash is retained.
+func (a *Server) apiKeys(w http.ResponseWriter, r *http.Request) {
+	if a.Keys == nil {
+		http.Error(w, "api key store not configured", 500)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, a.Keys.List(r.URL.Query().Get("tenant_id")))
+	case http.MethodPost:
+		var in struct {
+			TenantID string   `json:"tenant_id"`
+			Name     string   `json:"name"`
+			Scopes   []string `json:"scopes"`
+			TTL      string   `json:"ttl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if in.TenantID == "" {
+			if p, ok := PrincipalFromContext(r.Context()); ok {
+				in.TenantID = p.TenantID
+			}
+		}
+		if in.TenantID == "" || in.Name == "" {
+			http.Error(w, "tenant_id and name are required", 422)
+			return
+		}
+		var ttl time.Duration
+		if in.TTL != "" {
+			d, err := time.ParseDuration(in.TTL)
+			if err != nil {
+				http.Error(w, "invalid ttl: "+err.Error(), 422)
+				return
+			}
+			ttl = d
+		}
+		k, secret, err := a.Keys.Create(in.TenantID, in.Name, in.Scopes, ttl)
+		if err != nil {
+			http.Error(w, err.Error(), 422)
+			return
+		}
+		writeJSON(w, map[string]any{"id": k.ID, "tenant_id": k.TenantID, "name": k.Name, "scopes": k.Scopes, "expires_at": k.ExpiresAt, "secret": secret, "note": "store this secret now; it cannot be retrieved again"})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "id is required", 400)
+			return
+		}
+		if err := a.Keys.Disable(id); err != nil {
+			http.Error(w, err.Error(), 422)
+			return
+		}
+		writeJSON(w, map[string]any{"disabled": true})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }

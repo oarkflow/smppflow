@@ -1,0 +1,29 @@
+services:
+  smppflow:
+    build:
+      # go.mod declares: replace github.com/oarkflow/broker => ../broker
+      # so the build context must be the parent directory holding both repos.
+      context: ..
+      dockerfile: smppflow/Dockerfile
+    image: smppflow:latest
+    ports:
+      - "2775:2775"   # SMPP
+      - "8080:8080"   # HTTP API
+    volumes:
+      - smppflow-data:/data
+      - ./routes.demo.json:/etc/smppflow/routes.json:ro
+    environment:
+      # Set to "open" only for local development. The default "api-key" mode
+      # requires Authorization: Bearer <key> on every /v1 route.
+      SMPPFLOW_AUTH: api-key
+    restart: unless-stopped
+    healthcheck:
+      # Distroless images have no shell or curl, so the binary probes itself.
+      test: ["/smppflow-server", "--healthcheck", "--http", "127.0.0.1:8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  smppflow-data:

@@ -18,10 +18,13 @@ import (
 	"github.com/oarkflow/smppflow/pkg/session"
 )
 
+var demoAPIKey string
+
 func main() {
 	var (
 		mode      = flag.String("mode", "all", "demo mode: all, http, smpp")
 		httpBase  = flag.String("http", "http://127.0.0.1:8080", "HTTP API base URL")
+		apiKey    = flag.String("api-key", os.Getenv("SMPPFLOW_API_KEY"), "HTTP API key (or SMPPFLOW_API_KEY)")
 		smppAddr  = flag.String("smpp", "127.0.0.1:2775", "SMPP server address")
 		systemID  = flag.String("system-id", "smppclient", "SMPP system_id")
 		password  = flag.String("password", "password", "SMPP password")
@@ -32,6 +35,7 @@ func main() {
 		logFormat = flag.String("log-format", "json", "log format: json or text")
 	)
 	flag.Parse()
+	demoAPIKey = *apiKey
 
 	logger := newLogger(*logFormat)
 	slog.SetDefault(logger)
@@ -215,6 +219,9 @@ func runSMPP(ctx context.Context, logger *slog.Logger, addr, systemID, password,
 
 func get(ctx context.Context, logger *slog.Logger, url string) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if demoAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+demoAPIKey)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logger.Error("http.get.failed", "url", url, "error", err)
@@ -229,6 +236,9 @@ func post(ctx context.Context, logger *slog.Logger, url string, payload any) {
 	b, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
+	if demoAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+demoAPIKey)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logger.Error("http.post.failed", "url", url, "error", err)

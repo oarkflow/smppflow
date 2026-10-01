@@ -7,6 +7,11 @@ examples/server  # SMPP SMSC simulator + HTTP API + routing + queue + reporting
 examples/client  # HTTP API client + low-level SMPP client
 ```
 
+Events use a pluggable `events.Store`. The default is bounded in-memory storage;
+applications can provide SQL, Redis, broker, or custom persistence through the
+`events.Store` interface. Topic subscriptions support AMQP-style `*` and `#`
+patterns.
+
 All older examples were removed so the project has a single clear way to run and verify the platform.
 
 ## What the demo covers
@@ -87,17 +92,66 @@ Recommended:
 Go 1.23+
 ```
 
+smppflow builds against the sibling [`oarkflow/broker`](../broker) module via
+`replace github.com/oarkflow/broker => ../broker` in `go.mod`. Clone the broker
+repository next to this one before building:
+
+```text
+parent/
+  broker/      # github.com/oarkflow/broker
+  smppflow/    # this repository
+```
+
+If the sibling is missing, `bash scripts/ci.sh` explains exactly what to do.
+
 ## Run tests
 
 ```bash
-go test ./...
+bash scripts/ci.sh all
 ```
 
-Expected:
+This runs `gofmt`, `go vet`, `go test`, `go test -race`, `go build` and
+`govulncheck`. All must pass. The same gates run in CI
+(`.github/workflows/ci.yml`).
 
-```text
-PASS
+## Security
+
+The HTTP API is **authenticated by default**. Every `/v1` route requires an API
+key; `/healthz` and `/metrics` are open.
+
+```bash
+# Authorization header (preferred)
+curl -H "Authorization: Bearer $SMPPFLOW_API_KEY" ...
+
+# or the X-API-Key header
+curl -H "X-API-Key: $SMPPFLOW_API_KEY" ...
 ```
+
+On startup the demo prints a one-time API key to **stdout** (never to the
+structured logger, so it is not shipped to your log sink). Store it immediately —
+only its hash is retained, so it cannot be retrieved again.
+
+Key management is available under `/v1/manager/api-keys` (list, create, disable).
+The raw secret is returned exactly once at creation.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--auth` | `api-key` | `api-key` enforces key auth; `open` disables it (development only) |
+| `--auth-rate-limit` | `0` | Max requests per minute per API key (`0` disables) |
+| `--tls-cert` / `--tls-key` | unset | Serve the HTTP API over HTTPS |
+| `--smpp-tls-cert` / `--smpp-tls-key` | unset | Serve SMPP over TLS; unset means plain SMPP |
+
+Scope enforcement is available via `rbac.Policy`. Authenticated principals get
+their own `X-Actor-ID` and `tenant_id` stamped onto the request, so audit records
+cannot be spoofed by a caller-supplied header.
+
+The SMPP listener is plaintext by default, as is normal for a demo SMSC. The
+core listener and `pkg/smppserver` wrapper both support TLS listeners for real
+deployments. Set `server.Config.TLS` to a configured `*tls.Config`; leave it nil
+for plain TCP.
+
+> `--auth=open` is for local development only. It is logged as a warning at
+> startup and must not be used on a listener that is reachable by others.
 
 ## Start the server
 
@@ -109,11 +163,16 @@ Expected logs:
 
 ```json
 {"msg":"smpp.server.start","addr":":2775","system_id":"smppclient"}
-{"msg":"http.server.start","addr":":8080"}
-{"msg":"ready","smpp":":2775","http":":8080"}
-{"msg":"usage.health","command":"curl -s http://127.0.0.1:8080/healthz"}
-{"msg":"usage.send","command":"curl -s -X POST http://127.0.0.1:8080/v1/messages/send ..."}
-{"msg":"usage.client","command":"go run ./examples/client --http http://127.0.0.1:8080 --smpp 127.0.0.1:2775 ..."}
+{"msg":"http.auth","mode":"api-key","note":"all /v1 routes require Authorization: Bearer <key>; /healthz and /metrics are open"}
+{"msg":"http.server.start","addr":":8080","scheme":"http"}
+{"msg":"ready","smpp":":2775","http":":8080","scheme":"http","auth":"api-key"}
+```
+
+plus a single line printed to stdout:
+
+```text
+DEMO API KEY (shown once, not logged): sk_...
+Add to requests: -H 'Authorization: Bearer sk_...'
 ```
 
 The server accepts this default SMPP bind:
@@ -164,6 +223,16 @@ go run ./examples/client \
 ```
 
 ## HTTP curl usage
+
+Unless stated otherwise these examples assume an API key in `$SMPPFLOW_API_KEY`
+(see [Security](#security)):
+
+```bash
+export SMPPFLOW_API_KEY='sk_...'   # printed once at startup
+AUTH="Authorization: Bearer $SMPPFLOW_API_KEY"
+```
+
+Add `-H "$AUTH"` to any `/v1` request. `/healthz` and `/metrics` need no header.
 
 ### Health
 
@@ -456,12 +525,68 @@ Real-world SMPP interoperability still depends on each carrier's certification p
 
 Use the included server/client example as the functional reference, then add provider-specific certification packs for live carrier rollout.
 
+## Production deployment
+
+### Container image
+
+The image builds from the **parent** directory of both repositories, because
+`go.mod` replaces the broker module with a sibling checkout:
+
+```bash
+# where ./smppflow and ./broker are siblings
+docker build -f smppflow/Dockerfile -t smppflow:latest .
+```
+
+Or via compose (which sets the build context for you):
+
+```bash
+docker compose up --build
+```
+
+The image is distroless and runs as a non-root user. It exposes 2775 (SMPP) and
+8080 (HTTP API), and mounts `/data` for `--queue-backend=broker` WAL persistence.
+
+Container healthchecks have no shell or curl available, so the binary probes
+itself:
+
+```bash
+/smppflow-server --healthcheck --http 127.0.0.1:8080   # exits 0 when healthy
+```
+
+### TLS
+
+```bash
+go run ./examples/server \
+  --tls-cert /etc/smppflow/tls.crt \
+  --tls-key  /etc/smppflow/tls.key
+```
+
+Both flags are required together; supplying only one is a startup error.
+
+For the SMPP listener, use the equivalent flags:
+
+```bash
+go run ./examples/server \
+  --smpp-tls-cert /etc/smppflow/smpp.crt \
+  --smpp-tls-key /etc/smppflow/smpp.key
+```
+
+The core `pkg/server.Config.TLS` field and the `pkg/smppserver` production
+wrapper expose the same plain-or-TLS behavior for embedded applications.
+
+### CI
+
+`.github/workflows/ci.yml` runs gofmt, vet, tests, the race detector,
+govulncheck and a container build on Linux and macOS. It checks out
+`oarkflow/broker` as a sibling; if your broker repository lives elsewhere set the
+`BROKER_REPOSITORY` repository variable.
+
+Locally, `bash scripts/ci.sh all` runs the same gates.
+
 ## Developer commands
 
 ```bash
-go fmt ./...
-go test ./...
+bash scripts/ci.sh all    # all gates: fmt, vet, test, race, build, vuln
 go run ./examples/server
 go run ./examples/client
 ```
-
