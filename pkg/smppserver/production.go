@@ -145,7 +145,7 @@ func New(cfg Config) *Server {
 		if err != nil || !a.Enabled {
 			return protocol.ESME_RINVSYSID
 		}
-		if !security.ConstantTimeEqualSecret(req.Password, a.PasswordHash) {
+		if !security.VerifyPassword(req.Password, a.PasswordHash) {
 			return protocol.ESME_RINVPASWD
 		}
 		if len(a.Modes) > 0 {

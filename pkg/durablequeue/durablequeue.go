@@ -333,6 +333,27 @@ func (r RedisStreamsQueue) Nack(ctx context.Context, j *queue.Job, e error, dela
 	return nil
 }
 
+// EnsureGroup creates the consumer group (and the stream, via MKSTREAM) when
+// it does not exist yet. Redis rejects a duplicate group with BUSYGROUP,
+// which is treated as success so EnsureGroup is idempotent.
+func (r RedisStreamsQueue) EnsureGroup(ctx context.Context) error {
+	if r.Group == "" {
+		return errors.New("redis group required")
+	}
+	_, err := r.cmd(ctx, "XGROUP", "CREATE", r.stream(), r.Group, "0", "MKSTREAM")
+	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		return fmt.Errorf("redisqueue: xgroup create: %w", err)
+	}
+	return nil
+}
+
+// Shutdown implements queue.Backend by closing this queue's idle pooled
+// connections. In-flight commands finish on their own connections.
+func (r RedisStreamsQueue) Shutdown(ctx context.Context) error {
+	getRedisPool(r.addr(), r.Password, r.dialTimeout(), r.MaxIdleConns).closeIdle()
+	return nil
+}
+
 func (r RedisStreamsQueue) stream() string {
 	if r.Stream == "" {
 		return "smpp:jobs"
@@ -614,6 +635,16 @@ func (p *redisConnPool) put(c *pooledConn) {
 
 func (p *redisConnPool) discard(c *pooledConn) {
 	c.Close()
+}
+
+func (p *redisConnPool) closeIdle() {
+	p.mu.Lock()
+	idle := p.idle
+	p.idle = nil
+	p.mu.Unlock()
+	for _, c := range idle {
+		c.Close()
+	}
 }
 
 // ExternalBackend adapts an externally-supplied client into a

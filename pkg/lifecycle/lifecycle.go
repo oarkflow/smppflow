@@ -38,3 +38,19 @@ const (
 	MsgDeadLettered                    = "dead_lettered"
 	MsgArchived                        = "archived"
 )
+
+func (s MessageState) IsTerminal() bool {
+	switch s {
+	case MsgDelivered, MsgUndeliverable, MsgFailed, MsgExpired, MsgRejected, MsgDeadLettered, MsgArchived:
+		return true
+	}
+	return false
+}
+
+func (s ConnectionState) IsTerminal() bool {
+	switch s {
+	case ConnClosed, ConnFailed:
+		return true
+	}
+	return false
+}

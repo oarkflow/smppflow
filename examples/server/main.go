@@ -97,8 +97,13 @@ func main() {
 		workers        = flag.Int("workers", 2, "async queue workers")
 		routeFile      = flag.String("routes", "./routes.demo.json", "file-backed route repository path")
 		logFormat      = flag.String("log-format", "json", "log format: json or text")
-		queueBackend   = flag.String("queue-backend", "memory", "job queue backend: memory or broker (oarkflow/broker WAL-backed durable queue)")
+		queueBackend   = flag.String("queue-backend", "memory", "job queue backend: memory, redis (Redis Streams durable queue), or broker (oarkflow/broker WAL-backed durable queue)")
 		queueDataDir   = flag.String("queue-data-dir", "./.smppflow-queue", "data directory for --queue-backend=broker's WAL persistence")
+		redisAddr      = flag.String("redis-addr", "127.0.0.1:6379", "Redis address for --queue-backend=redis")
+		redisPassword  = flag.String("redis-password", os.Getenv("SMPPFLOW_REDIS_PASSWORD"), "Redis password for --queue-backend=redis (or SMPPFLOW_REDIS_PASSWORD)")
+		redisStream    = flag.String("redis-stream", "smpp:jobs", "Redis stream name for --queue-backend=redis")
+		redisGroup     = flag.String("redis-group", "smppflow", "Redis consumer group for --queue-backend=redis")
+		redisConsumer  = flag.String("redis-consumer", "smppflow-1", "Redis consumer name for --queue-backend=redis")
 		tlsCert        = flag.String("tls-cert", "", "TLS certificate file for the HTTP API listener (enables HTTPS)")
 		tlsKey         = flag.String("tls-key", "", "TLS private key file for the HTTP API listener")
 		authMode       = flag.String("auth", "api-key", "HTTP API auth mode: api-key (default) or open (development only)")
@@ -164,6 +169,11 @@ func main() {
 	metrics.SetHelp("http_request_duration_seconds", "HTTP API request latency in seconds, by path")
 
 	var submitted atomic.Uint64
+	bindPasswordHash, err := security.HashPassword(*password)
+	if err != nil {
+		logger.Error("smpp.password.hash_failed", "error", err)
+		os.Exit(1)
+	}
 	smppServer := smpp.New(smpp.Config{
 		Addr:     *smppAddr,
 		TLS:      smppTLS,
@@ -174,7 +184,7 @@ func main() {
 		DLRDelay: 500 * time.Millisecond,
 		Auth: func(req protocol.BindRequest) protocol.CommandStatus {
 			logger.Info("smpp.bind", "system_id", req.SystemID, "mode", req.Mode, "version", req.InterfaceVersion)
-			if req.SystemID != *systemID || req.Password != *password {
+			if req.SystemID != *systemID || !security.VerifyPassword(req.Password, bindPasswordHash) {
 				logger.Warn("smpp.bind_rejected", "system_id", req.SystemID)
 				metrics.Inc("smpp_bind_total", map[string]string{"status": "rejected"}, 1)
 				return protocol.ESME_RINVPASWD
@@ -243,6 +253,21 @@ func main() {
 		q = bq
 		logger.Info("queue.backend", "backend", "broker", "data_dir", *queueDataDir,
 			"note", "oarkflow/broker is pre-v1 per its own README; manager queue-introspection endpoints (snapshot/dlq/replay/cancel) are unavailable in this mode")
+	case "redis":
+		rq := durablequeue.RedisStreamsQueue{
+			Addr:     *redisAddr,
+			Password: *redisPassword,
+			Stream:   *redisStream,
+			Group:    *redisGroup,
+			Consumer: *redisConsumer,
+		}
+		if err := rq.EnsureGroup(ctx); err != nil {
+			logger.Error("queue.redis.init_failed", "error", err)
+			os.Exit(1)
+		}
+		q = rq
+		logger.Info("queue.backend", "backend", "redis", "addr", *redisAddr, "stream", *redisStream, "group", *redisGroup, "consumer", *redisConsumer,
+			"note", "Redis Streams is durable across restarts; manager queue-introspection endpoints (snapshot/dlq/replay/cancel) are unavailable in this mode")
 	default:
 		mem := queue.NewMemory()
 		mgrQueue = mem
@@ -319,7 +344,7 @@ func main() {
 	ops := manager.NewOperations(mgrStore, msgStore, router, mgrQueue, session.NewManager(nil))
 	_ = ops.UpsertTenant(ctx, "bootstrap", manager.Tenant{ID: *tenantID, Name: "Demo Tenant", Status: manager.TenantActive, TPS: 100, AllowedCountries: []string{"NP"}, AllowedSenderIDs: []string{"BRAND", "OTP", "PROMO"}})
 	_ = ops.SaveProvider(ctx, "bootstrap", prof)
-	_ = ops.SaveBind(ctx, "bootstrap", manager.BindAccount{TenantID: *tenantID, SystemID: *systemID, BindMode: string(protocol.BindModeTransceiver), MaxBinds: 2, TPS: 100, Enabled: true})
+	_ = ops.SaveBind(ctx, "bootstrap", manager.BindAccount{TenantID: *tenantID, SystemID: *systemID, BindMode: string(protocol.BindModeTransceiver), PasswordHash: bindPasswordHash, MaxBinds: 2, TPS: 100, Enabled: true})
 	_ = mgrStore.SaveSenderApproval(ctx, manager.SenderApproval{TenantID: *tenantID, Sender: "BRAND", Country: "NP", State: manager.SenderApproved})
 	_ = mgrStore.SaveSenderApproval(ctx, manager.SenderApproval{TenantID: *tenantID, Sender: "OTP", Country: "NP", State: manager.SenderApproved})
 
@@ -469,7 +494,7 @@ func printUsage(logger *slog.Logger, httpAddr, smppAddr, tenantID, systemID, pas
 	if !authEnabled {
 		logger.Warn("usage.auth", "note", "HTTP API is unauthenticated; start with --auth=api-key (the default) before exposing this listener")
 	}
-	logger.Info("usage.queue_backend", "note", "pass --queue-backend=broker --queue-data-dir=./.smppflow-queue for a WAL-persistent durable queue instead of the default in-memory one")
+	logger.Info("usage.queue_backend", "note", "pass --queue-backend=redis --redis-addr=127.0.0.1:6379 for a Redis Streams durable queue, or --queue-backend=broker --queue-data-dir=./.smppflow-queue for the WAL-backed one, instead of the default in-memory queue")
 	logger.Info("usage.health", "command", "curl -sk "+httpURL+"/healthz")
 	logger.Info("usage.metrics", "command", "curl -sk "+httpURL+"/metrics")
 	logger.Info("usage.send", "command", "curl -sk -X POST "+httpURL+"/v1/messages/send "+authHeader+"-H 'Content-Type: application/json' -d '{\"TenantID\":\""+tenantID+"\",\"From\":\"BRAND\",\"To\":\"9779841000000\",\"Text\":\"Your OTP is 123456\",\"RegisteredDelivery\":1,\"Meta\":{\"country\":\"NP\",\"message_type\":\"otp\"}}'")

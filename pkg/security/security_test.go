@@ -1,6 +1,10 @@
 package security_test
 
 import (
+	"crypto/pbkdf2"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -225,5 +229,121 @@ func TestRedactorDefaultMask(t *testing.T) {
 	r := security.Redactor{Secrets: []string{"s"}}
 	if got := r.Redact("s"); got != "***" {
 		t.Fatalf("got %q want ***", got)
+	}
+}
+
+func TestHashPasswordRoundTrip(t *testing.T) {
+	encoded, err := security.HashPassword("smpp-bind-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(encoded, "pbkdf2-sha256$") {
+		t.Fatalf("unexpected encoding %q", encoded)
+	}
+	if strings.Contains(encoded, "smpp-bind-password") {
+		t.Fatal("encoded hash must not contain the plaintext")
+	}
+	if !security.VerifyPassword("smpp-bind-password", encoded) {
+		t.Fatal("matching password should verify")
+	}
+	if security.VerifyPassword("wrong", encoded) {
+		t.Fatal("wrong password must not verify")
+	}
+	if security.VerifyPassword("", encoded) {
+		t.Fatal("empty password must not verify")
+	}
+}
+
+func TestHashPasswordUsesUniqueSalts(t *testing.T) {
+	a, err := security.HashPassword("same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := security.HashPassword("same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("identical passwords must hash differently per-password salt")
+	}
+	if !security.VerifyPassword("same", a) || !security.VerifyPassword("same", b) {
+		t.Fatal("both hashes must verify against the same password")
+	}
+}
+
+func craftPasswordHash(t *testing.T, password string, iterations int) string {
+	t.Helper()
+	salt := []byte("0123456789abcdef")
+	dk, err := pbkdf2.Key(sha256.New, password, salt, iterations, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s",
+		iterations,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(dk),
+	)
+}
+
+func TestVerifyPasswordAcceptsCustomIterationCount(t *testing.T) {
+	encoded := craftPasswordHash(t, "pw", 1024)
+	if !security.VerifyPassword("pw", encoded) {
+		t.Fatal("hash with custom iteration count should verify")
+	}
+	if security.VerifyPassword("no", encoded) {
+		t.Fatal("wrong password must not verify")
+	}
+	if !security.NeedsRehash(encoded) {
+		t.Fatal("hash below current iteration count needs rehash")
+	}
+}
+
+func TestVerifyPasswordLegacySHA256Hex(t *testing.T) {
+	legacy := security.HashSecret("legacy-pw")
+	if !security.VerifyPassword("legacy-pw", legacy) {
+		t.Fatal("legacy unsalted sha256 hex hash should still verify")
+	}
+	if security.VerifyPassword("wrong", legacy) {
+		t.Fatal("wrong password must not verify against legacy hash")
+	}
+	if !security.NeedsRehash(legacy) {
+		t.Fatal("legacy hash needs rehash")
+	}
+}
+
+func TestVerifyPasswordRejectsMalformed(t *testing.T) {
+	bad := []string{
+		"pbkdf2-sha256$",
+		"pbkdf2-sha256$abc$c2FsdA$aGFzaA",
+		"pbkdf2-sha256$0$c2FsdA$aGFzaA",
+		"pbkdf2-sha256$1024$$aGFzaA",
+		"pbkdf2-sha256$1024$c2FsdA$",
+		"pbkdf2-sha256$1024!!!aGFzaA",
+		"pbkdf2-sha256$1024$!!!$aGFzaA",
+		"pbkdf2-sha256$1024$c2FsdA$!!!",
+		"pbkdf2-sha256$1024$c2FsdA",
+		"pbkdf2-sha512$1024$c2FsdA$aGFzaA",
+		"",
+	}
+	for _, encoded := range bad {
+		if security.VerifyPassword("pw", encoded) {
+			t.Fatalf("malformed hash %q must not verify", encoded)
+		}
+	}
+}
+
+func TestNeedsRehash(t *testing.T) {
+	encoded, err := security.HashPassword("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if security.NeedsRehash(encoded) {
+		t.Fatal("fresh HashPassword output must not need rehash")
+	}
+	if !security.NeedsRehash(security.HashSecret("pw")) {
+		t.Fatal("legacy hash must need rehash")
+	}
+	if !security.NeedsRehash("garbage") {
+		t.Fatal("unrecognized hash must need rehash")
 	}
 }

@@ -192,6 +192,21 @@ go run ./examples/server \
   --provider-addr 127.0.0.1:29975
 ```
 
+### Job queue backends
+
+`--queue-backend` selects the async job queue implementation:
+
+```bash
+go run ./examples/server --queue-backend memory   # default, in-process
+go run ./examples/server --queue-backend redis    # Redis Streams (durable), needs a reachable Redis
+go run ./examples/server --queue-backend broker   # oarkflow/broker WAL (--queue-data-dir)
+```
+
+Redis options: `--redis-addr` (default `127.0.0.1:6379`), `--redis-password`
+(or `SMPPFLOW_REDIS_PASSWORD`), `--redis-stream` (default `smpp:jobs`),
+`--redis-group` (default `smppflow`), `--redis-consumer` (default
+`smppflow-1`). The consumer group is created automatically on startup.
+
 ## Run the client
 
 With default ports:

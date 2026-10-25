@@ -109,7 +109,10 @@ func ExtractVariables(body string) []string {
 	vars := map[string]bool{}
 	for _, part := range strings.Split(body, "{{")[1:] {
 		if i := strings.Index(part, "}}"); i >= 0 {
-			vars[strings.TrimSpace(part[:i])] = true
+			name := strings.TrimPrefix(strings.TrimSpace(part[:i]), ".")
+			if name != "" {
+				vars[name] = true
+			}
 		}
 	}
 	out := []string{}

@@ -2,11 +2,15 @@ package security
 
 import (
 	"crypto/hmac"
+	"crypto/pbkdf2"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +25,98 @@ func ConstantTimeEqualSecret(secret, hash string) bool {
 	return hmac.Equal([]byte(hs), []byte(hash))
 }
 func EqualString(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
+
+const (
+	passwordHashPrefix = "pbkdf2-sha256"
+	passwordIterations = 210000
+	passwordSaltLen    = 16
+	passwordKeyLen     = 32
+)
+
+// HashPassword derives a salted PBKDF2-HMAC-SHA256 hash for stored passwords
+// (e.g. SMPP bind passwords) and encodes it as
+// "pbkdf2-sha256$<iterations>$<salt>$<derived-key>" with raw stdlib base64
+// segments. Use HashSecret for high-entropy API keys instead.
+func HashPassword(password string) (string, error) {
+	return hashPasswordWithIterations(password, passwordIterations)
+}
+
+func hashPasswordWithIterations(password string, iterations int) (string, error) {
+	if iterations <= 0 {
+		iterations = passwordIterations
+	}
+	salt := make([]byte, passwordSaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	return encodePasswordHash(password, salt, iterations)
+}
+
+func encodePasswordHash(password string, salt []byte, iterations int) (string, error) {
+	dk, err := pbkdf2.Key(sha256.New, password, salt, iterations, passwordKeyLen)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s$%d$%s$%s",
+		passwordHashPrefix,
+		iterations,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(dk),
+	), nil
+}
+
+// VerifyPassword reports whether password matches the stored hash produced by
+// HashPassword. Legacy unsalted SHA-256 hex digests (HashSecret output) are
+// still accepted so existing Account.PasswordHash values keep working.
+func VerifyPassword(password, encoded string) bool {
+	if strings.HasPrefix(encoded, passwordHashPrefix+"$") {
+		return verifyPasswordHash(password, encoded)
+	}
+	return ConstantTimeEqualSecret(password, encoded)
+}
+
+func verifyPasswordHash(password, encoded string) bool {
+	salt, dk, iterations, ok := parsePasswordHash(encoded)
+	if !ok {
+		return false
+	}
+	got, err := pbkdf2.Key(sha256.New, password, salt, iterations, len(dk))
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(got, dk)
+}
+
+func parsePasswordHash(encoded string) (salt, dk []byte, iterations int, ok bool) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 4 || parts[0] != passwordHashPrefix {
+		return nil, nil, 0, false
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil || n <= 0 {
+		return nil, nil, 0, false
+	}
+	salt, err = base64.RawStdEncoding.DecodeString(parts[2])
+	if err != nil || len(salt) == 0 {
+		return nil, nil, 0, false
+	}
+	dk, err = base64.RawStdEncoding.DecodeString(parts[3])
+	if err != nil || len(dk) == 0 {
+		return nil, nil, 0, false
+	}
+	return salt, dk, n, true
+}
+
+// NeedsRehash reports whether encoded should be upgraded to the current
+// HashPassword parameters: legacy SHA-256 hex digests and hashes with fewer
+// iterations than the current default all qualify.
+func NeedsRehash(encoded string) bool {
+	if !strings.HasPrefix(encoded, passwordHashPrefix+"$") {
+		return true
+	}
+	_, _, iterations, ok := parsePasswordHash(encoded)
+	return !ok || iterations < passwordIterations
+}
 
 type IPPolicy struct {
 	AllowCIDR []string
